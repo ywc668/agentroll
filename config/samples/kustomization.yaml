@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- agentroll_v1alpha1_agentdeployment.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

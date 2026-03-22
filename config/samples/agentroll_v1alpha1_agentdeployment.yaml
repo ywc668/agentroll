@@ -1,0 +1,9 @@
+apiVersion: agentroll.agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  labels:
+    app.kubernetes.io/name: agentroll
+    app.kubernetes.io/managed-by: kustomize
+  name: agentdeployment-sample
+spec:
+  # TODO(user): Add fields here
