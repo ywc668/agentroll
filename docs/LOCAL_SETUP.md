@@ -64,7 +64,7 @@ cd agentroll
 go mod init github.com/ywc668/agentroll
 
 # 初始化Kubebuilder（会创建项目脚手架）
-kubebuilder init --domain agentroll.io --repo github.com/ywc668/agentroll
+kubebuilder init --domain agentroll.dev --repo github.com/ywc668/agentroll
 
 # 创建API（会生成controller脚手架）
 kubebuilder create api --group agentroll --version v1alpha1 --kind AgentDeployment

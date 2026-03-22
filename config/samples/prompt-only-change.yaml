@@ -7,7 +7,7 @@
 # This is the most common deployment scenario for AI agents:
 # "I tweaked the system prompt, does it work better?"
 
-apiVersion: agentroll.io/v1alpha1
+apiVersion: agentroll.dev/v1alpha1
 kind: AgentDeployment
 metadata:
   name: summarizer-agent

@@ -133,7 +133,7 @@ kubectl apply -f examples/basic-agent-deployment.yaml
 ## AgentDeployment CRD (Preview)
 
 ```yaml
-apiVersion: agentroll.io/v1alpha1
+apiVersion: agentroll.dev/v1alpha1
 kind: AgentDeployment
 metadata:
   name: customer-support-agent

@@ -10,7 +10,7 @@
 # - Argo Rollouts installed
 # - Langfuse instance running (for analysis data)
 
-apiVersion: agentroll.io/v1alpha1
+apiVersion: agentroll.dev/v1alpha1
 kind: AgentDeployment
 metadata:
   name: customer-support-agent

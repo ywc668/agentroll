@@ -19,7 +19,7 @@ metadata:
   name: agent-quality-check
   labels:
     app.kubernetes.io/part-of: agentroll
-    agentroll.io/template-type: quality
+    agentroll.dev/template-type: quality
 spec:
   args:
     - name: agent-name
