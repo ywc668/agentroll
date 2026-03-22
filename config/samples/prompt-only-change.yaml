@@ -1,0 +1,40 @@
+# Example: Prompt-only change (lightweight deployment path)
+#
+# When only the prompt changes (no code change), AgentRoll supports
+# a fast path that skips container rebuild and only updates the
+# agent's prompt version metadata + triggers evaluation.
+#
+# This is the most common deployment scenario for AI agents:
+# "I tweaked the system prompt, does it work better?"
+
+apiVersion: agentroll.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: summarizer-agent
+  namespace: staging
+spec:
+  container:
+    image: myregistry/summarizer-agent:v1.0.0   # Same image — no rebuild needed
+    env:
+      - name: LLM_MODEL
+        value: claude-sonnet-4-20250514
+
+  agentMeta:
+    promptVersion: "def456"          # <-- Only this changed
+    modelVersion: "claude-sonnet-4-20250514"
+
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 10
+        pause:
+          duration: "3m"
+        analysis:
+          templateRef: agent-quality-check
+      - setWeight: 50
+        pause:
+          duration: "5m"
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true

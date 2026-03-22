@@ -1,0 +1,118 @@
+# Example: Deploy a customer support agent with canary rollout
+#
+# This demonstrates AgentRoll's core value proposition:
+# - Declare an agent as a Kubernetes resource
+# - Progressive delivery with evaluation gates
+# - Automatic rollback on quality degradation
+#
+# Prerequisites:
+# - AgentRoll operator installed
+# - Argo Rollouts installed
+# - Langfuse instance running (for analysis data)
+
+apiVersion: agentroll.io/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: customer-support-agent
+  namespace: production
+  labels:
+    app: customer-support
+    team: ai-platform
+spec:
+  replicas: 3
+
+  container:
+    image: myregistry/support-agent:v2.1.0
+    ports:
+      - containerPort: 8080
+        name: http
+    env:
+      - name: LLM_PROVIDER
+        value: anthropic
+      - name: LLM_MODEL
+        value: claude-sonnet-4-20250514
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: llm-credentials
+            key: anthropic-api-key
+      - name: LANGFUSE_PUBLIC_KEY
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-credentials
+            key: public-key
+      - name: LANGFUSE_SECRET_KEY
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-credentials
+            key: secret-key
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+
+  agentMeta:
+    promptVersion: "abc123"
+    modelProvider: "anthropic"
+    modelVersion: "claude-sonnet-4-20250514"
+    toolDependencies:
+      - name: crm-mcp-server
+        version: ">=1.2.0"
+      - name: knowledge-base-api
+        version: ">=3.0.0"
+    labels:
+      domain: customer-support
+      tier: production
+
+  rollout:
+    strategy: canary
+    steps:
+      # Step 1: Small canary — quick smoke test
+      - setWeight: 5
+        pause:
+          duration: "5m"
+        analysis:
+          templateRef: agent-quality-check
+
+      # Step 2: Larger canary — more statistical significance
+      - setWeight: 20
+        pause:
+          duration: "10m"
+        analysis:
+          templateRef: agent-quality-check
+
+      # Step 3: Half traffic — cost comparison
+      - setWeight: 50
+        pause:
+          duration: "15m"
+        analysis:
+          templateRef: agent-cost-check
+
+      # Step 4: Full rollout
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true
+    onCostSpike:
+      threshold: "200%"
+
+  observability:
+    langfuse:
+      endpoint: "https://langfuse.internal.company.com"
+      projectId: "customer-support-agent"
+      secretRef: "langfuse-credentials"
+    opentelemetry:
+      enabled: true
+
+  scaling:
+    minReplicas: 2
+    maxReplicas: 10
+    metric: queue-depth
+    targetValue: 5
+    queueRef:
+      provider: redis
+      address: "redis.internal:6379"
+      queueName: "support-agent-tasks"

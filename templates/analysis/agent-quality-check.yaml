@@ -1,0 +1,66 @@
+# AgentRoll Pre-built AnalysisTemplate: Agent Quality Check
+#
+# This template queries Langfuse trace data to evaluate agent quality
+# during canary deployments. It checks:
+#   1. Tool call success rate (must be >= 90%)
+#   2. Average response latency (must be <= 5s)
+#   3. Average tokens per task (must not exceed 2x baseline)
+#
+# Usage: Referenced in AgentDeployment rollout steps via templateRef: agent-quality-check
+#
+# Prerequisites:
+#   - Langfuse instance accessible from the cluster
+#   - Agent instrumented with Langfuse SDK (traces tagged with deployment version)
+#   - Prometheus scraping Langfuse metrics endpoint (or use Langfuse API directly)
+
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: agent-quality-check
+  labels:
+    app.kubernetes.io/part-of: agentroll
+    agentroll.io/template-type: quality
+spec:
+  args:
+    - name: agent-name
+    - name: canary-version
+    - name: langfuse-endpoint
+      value: "http://langfuse.monitoring:3000"
+    - name: langfuse-project-id
+
+  metrics:
+    # Metric 1: Tool call success rate
+    # Agents that can't successfully call their tools are broken.
+    - name: tool-call-success-rate
+      interval: 2m
+      count: 3                    # Check 3 times
+      successCondition: "result[0] >= 0.90"  # Must be >= 90%
+      failureLimit: 1             # Fail after 1 bad reading
+      provider:
+        web:
+          url: "{{args.langfuse-endpoint}}/api/public/metrics/tool-success-rate?project={{args.langfuse-project-id}}&version={{args.canary-version}}&window=5m"
+          jsonPath: "{$.successRate}"
+
+    # Metric 2: Average response latency
+    # Agent responses should complete within acceptable time.
+    - name: avg-response-latency
+      interval: 2m
+      count: 3
+      successCondition: "result[0] <= 5000"  # Must be <= 5000ms
+      failureLimit: 1
+      provider:
+        web:
+          url: "{{args.langfuse-endpoint}}/api/public/metrics/latency?project={{args.langfuse-project-id}}&version={{args.canary-version}}&window=5m"
+          jsonPath: "{$.avgLatencyMs}"
+
+    # Metric 3: Token consumption (cost proxy)
+    # Canary should not consume dramatically more tokens than stable.
+    - name: tokens-per-task
+      interval: 2m
+      count: 3
+      successCondition: "result[0] <= 2.0"   # Must not exceed 2x baseline
+      failureLimit: 1
+      provider:
+        web:
+          url: "{{args.langfuse-endpoint}}/api/public/metrics/tokens-per-task-ratio?project={{args.langfuse-project-id}}&version={{args.canary-version}}&window=5m"
+          jsonPath: "{$.ratioToBaseline}"
