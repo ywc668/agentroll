@@ -42,9 +42,9 @@ type AgentDeploymentReconciler struct {
 
 // RBAC permissions needed by the controller.
 // It needs to manage AgentDeployments (our CRD) plus Deployments and Services (what we create).
-// +kubebuilder:rbac:groups=agentroll.agentroll.dev,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=agentroll.agentroll.dev,resources=agentdeployments/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=agentroll.agentroll.dev,resources=agentdeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 

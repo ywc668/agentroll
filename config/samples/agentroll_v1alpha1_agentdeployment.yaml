@@ -1,4 +1,4 @@
-apiVersion: agentroll.agentroll.dev/v1alpha1
+apiVersion: agentroll.dev/v1alpha1
 kind: AgentDeployment
 metadata:
   labels:
