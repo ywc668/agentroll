@@ -310,7 +310,7 @@ func resourcesOrDefault(res *corev1.ResourceRequirements) corev1.ResourceRequire
 
 // toServicePorts converts ContainerPorts to ServicePorts.
 func toServicePorts(containerPorts []corev1.ContainerPort) []corev1.ServicePort {
-	var svcPorts []corev1.ServicePort
+	svcPorts := make([]corev1.ServicePort, 0, len(containerPorts))
 	for _, cp := range containerPorts {
 		svcPorts = append(svcPorts, corev1.ServicePort{
 			Name:       cp.Name,
