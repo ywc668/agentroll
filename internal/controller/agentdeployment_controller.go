@@ -291,51 +291,89 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 		return nil
 	}
 
-	// Create the agent-quality-check AnalysisTemplate
-	template := &rolloutsv1alpha1.AnalysisTemplate{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "agent-quality-check",
-			Namespace: agentDeploy.Namespace,
-		},
+	// Collect unique template names referenced by steps
+	templateNames := map[string]bool{}
+	for _, step := range agentDeploy.Spec.Rollout.Steps {
+		if step.Analysis != nil {
+			templateNames[step.Analysis.TemplateRef] = true
+		}
 	}
 
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, template, func() error {
-		template.Labels = map[string]string{
-			"app.kubernetes.io/managed-by": "agentroll",
-			"agentroll.dev/template-type":  "quality",
+	// Pre-built templates that AgentRoll manages automatically.
+	// Users can override by creating their own template with the same name
+	// (without the agentroll managed-by label).
+	managedTemplates := map[string]bool{
+		"agent-quality-check": true,
+		"agent-cost-check":    true,
+	}
+
+	for name := range templateNames {
+		// If not a managed template name, assume user created it — skip
+		if !managedTemplates[name] {
+			log.Info("AnalysisTemplate is user-managed, skipping",
+				"name", name,
+			)
+			continue
 		}
 
-		template.Spec = rolloutsv1alpha1.AnalysisTemplateSpec{
-			Metrics: []rolloutsv1alpha1.Metric{
-				{
-					// For MVP, this is a simple success metric that always passes.
-					// It proves the integration works end-to-end.
-					// Phase 3 will replace this with real Langfuse/Prometheus queries.
-					Name:             "agent-health",
-					SuccessCondition: "result[0] == 1",
-					Provider: rolloutsv1alpha1.MetricProvider{
-						Job: &rolloutsv1alpha1.JobMetric{
-							Spec: batchJobSpec(),
-						},
-					},
-				},
+		// Check if template already exists
+		existing := &rolloutsv1alpha1.AnalysisTemplate{}
+		err := r.Get(ctx, client.ObjectKey{
+			Name:      name,
+			Namespace: agentDeploy.Namespace,
+		}, existing)
+
+		if err == nil {
+			// Template exists — check if it's ours or user-created
+			managedBy, hasLabel := existing.Labels["app.kubernetes.io/managed-by"]
+			if !hasLabel || managedBy != "agentroll" {
+				// User created or modified this template — don't overwrite
+				log.Info("AnalysisTemplate exists but not managed by AgentRoll, skipping",
+					"name", name,
+				)
+				continue
+			}
+		}
+
+		// Either doesn't exist or is managed by us — create/update
+		template := &rolloutsv1alpha1.AnalysisTemplate{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: agentDeploy.Namespace,
 			},
 		}
 
-		// Note: AnalysisTemplate is NOT owned by a single AgentDeployment
-		// because multiple agents might share the same template.
-		// We skip SetControllerReference here intentionally.
-		return nil
-	})
+		result, createErr := controllerutil.CreateOrUpdate(ctx, r.Client, template, func() error {
+			template.Labels = map[string]string{
+				"app.kubernetes.io/managed-by": "agentroll",
+				"agentroll.dev/template-type":  "quality",
+			}
+			template.Spec = rolloutsv1alpha1.AnalysisTemplateSpec{
+				Metrics: []rolloutsv1alpha1.Metric{
+					{
+						Name:             "agent-health",
+						SuccessCondition: "result[0] == 1",
+						Provider: rolloutsv1alpha1.MetricProvider{
+							Job: &rolloutsv1alpha1.JobMetric{
+								Spec: batchJobSpec(),
+							},
+						},
+					},
+				},
+			}
+			return nil
+		})
 
-	if err != nil {
-		return fmt.Errorf("failed to reconcile AnalysisTemplate: %w", err)
+		if createErr != nil {
+			return fmt.Errorf("failed to reconcile AnalysisTemplate %s: %w", name, createErr)
+		}
+
+		log.Info("AnalysisTemplate reconciled",
+			"name", name,
+			"result", result,
+		)
 	}
 
-	log.Info("AnalysisTemplate reconciled",
-		"name", template.Name,
-		"result", result,
-	)
 	return nil
 }
 
