@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +31,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
+
 	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
 )
 
@@ -40,34 +42,30 @@ type AgentDeploymentReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// RBAC permissions needed by the controller.
-// It needs to manage AgentDeployments (our CRD) plus Deployments and Services (what we create).
+// RBAC for our CRD
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//
+// RBAC for Argo Rollouts resources (NEW in Sprint 2)
+// +kubebuilder:rbac:groups=argoproj.io,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=argoproj.io,resources=analysistemplates,verbs=get;list;watch;create;update;patch;delete
+//
+// RBAC for Services (unchanged from Sprint 1)
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the main reconciliation loop.
-// It watches AgentDeployment resources and ensures the actual cluster state
-// (Deployments, Services) matches the desired state declared in the CRD.
 //
-// This is the heart of the Kubernetes operator pattern:
-//
-//	User declares: "I want this agent running with these settings"
-//	Controller ensures: "OK, I'll create/update the Deployment and Service to match"
+// Sprint 2 change: instead of creating a native Deployment, we now create
+// an Argo Rollout with canary strategy and AnalysisTemplate references.
+// This is the key transition from "just deploying" to "progressive delivery."
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// =========================================================================
-	// Step 1: Fetch the AgentDeployment resource
-	// =========================================================================
+	// Step 1: Fetch the AgentDeployment
 	agentDeploy := &agentrollv1alpha1.AgentDeployment{}
 	if err := r.Get(ctx, req.NamespacedName, agentDeploy); err != nil {
 		if errors.IsNotFound(err) {
-			// Resource was deleted — nothing to do.
-			// Owned resources (Deployment, Service) will be garbage collected
-			// automatically because we set OwnerReference.
 			log.Info("AgentDeployment not found, likely deleted")
 			return ctrl.Result{}, nil
 		}
@@ -78,34 +76,32 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	log.Info("Reconciling AgentDeployment",
 		"name", agentDeploy.Name,
 		"image", agentDeploy.Spec.Container.Image,
+		"strategy", agentDeploy.Spec.Rollout.Strategy,
 	)
 
-	// =========================================================================
-	// Step 2: Build the composite version string
-	// =========================================================================
-	// This captures the "4-layer version identity" that makes agents different
-	// from microservices. Used as a label for tracking which version is deployed.
+	// Step 2: Build composite version
 	compositeVersion := buildCompositeVersion(agentDeploy)
 
-	// =========================================================================
-	// Step 3: Reconcile the Deployment
-	// =========================================================================
-	if err := r.reconcileDeployment(ctx, agentDeploy, compositeVersion); err != nil {
-		log.Error(err, "failed to reconcile Deployment")
+	// Step 3: Reconcile AnalysisTemplate (NEW in Sprint 2)
+	// Ensures agent-quality-check AnalysisTemplate exists in the namespace.
+	if err := r.reconcileAnalysisTemplate(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile AnalysisTemplate")
 		return ctrl.Result{}, err
 	}
 
-	// =========================================================================
-	// Step 4: Reconcile the Service
-	// =========================================================================
+	// Step 4: Reconcile the Argo Rollout (CHANGED from Deployment in Sprint 1)
+	if err := r.reconcileRollout(ctx, agentDeploy, compositeVersion); err != nil {
+		log.Error(err, "failed to reconcile Rollout")
+		return ctrl.Result{}, err
+	}
+
+	// Step 5: Reconcile Service (unchanged)
 	if err := r.reconcileService(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile Service")
 		return ctrl.Result{}, err
 	}
 
-	// =========================================================================
-	// Step 5: Update Status
-	// =========================================================================
+	// Step 6: Update Status
 	if err := r.updateStatus(ctx, agentDeploy, compositeVersion); err != nil {
 		log.Error(err, "failed to update status")
 		return ctrl.Result{}, err
@@ -115,56 +111,43 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-// reconcileDeployment creates or updates the Kubernetes Deployment for the agent.
-func (r *AgentDeploymentReconciler) reconcileDeployment(
+// reconcileRollout creates or updates an Argo Rollout for the agent.
+//
+// This is the Sprint 2 replacement for reconcileDeployment.
+// Instead of a plain Kubernetes Deployment, we create an Argo Rollout
+// with canary strategy — enabling progressive delivery with evaluation gates.
+func (r *AgentDeploymentReconciler) reconcileRollout(
 	ctx context.Context,
 	agentDeploy *agentrollv1alpha1.AgentDeployment,
 	compositeVersion string,
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Determine replica count
 	replicas := int32(1)
 	if agentDeploy.Spec.Replicas != nil {
 		replicas = *agentDeploy.Spec.Replicas
 	}
 
-	// Standard labels applied to all resources we create
-	labels := map[string]string{
-		"app.kubernetes.io/name":          agentDeploy.Name,
-		"app.kubernetes.io/managed-by":    "agentroll",
-		"agentroll.dev/composite-version": compositeVersion,
+	labels := buildLabels(agentDeploy, compositeVersion)
+	selectorLabels := map[string]string{
+		"app.kubernetes.io/name": agentDeploy.Name,
 	}
 
-	// Add agent meta labels if present
-	if agentDeploy.Spec.AgentMeta.PromptVersion != "" {
-		labels["agentroll.dev/prompt-version"] = agentDeploy.Spec.AgentMeta.PromptVersion
-	}
-	if agentDeploy.Spec.AgentMeta.ModelVersion != "" {
-		labels["agentroll.dev/model-version"] = agentDeploy.Spec.AgentMeta.ModelVersion
-	}
-
-	// Build the desired Deployment
-	deploy := &appsv1.Deployment{
+	// Build the desired Argo Rollout
+	rollout := &rolloutsv1alpha1.Rollout{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      agentDeploy.Name,
 			Namespace: agentDeploy.Namespace,
 		},
 	}
 
-	// CreateOrUpdate: if the Deployment exists, update it; if not, create it.
-	// This is idempotent — running Reconcile multiple times produces the same result.
-	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		// Set labels
-		deploy.Labels = labels
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, rollout, func() error {
+		rollout.Labels = labels
 
-		// Set the pod template
-		deploy.Spec = appsv1.DeploymentSpec{
+		rollout.Spec = rolloutsv1alpha1.RolloutSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app.kubernetes.io/name": agentDeploy.Name,
-				},
+				MatchLabels: selectorLabels,
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -184,32 +167,209 @@ func (r *AgentDeploymentReconciler) reconcileDeployment(
 					},
 				},
 			},
+			// This is the key difference from a Deployment:
+			// Argo Rollout strategy with canary steps
+			Strategy: buildArgoStrategy(agentDeploy),
 		}
 
-		// Set OwnerReference so the Deployment is garbage collected
-		// when the AgentDeployment is deleted.
-		return controllerutil.SetControllerReference(agentDeploy, deploy, r.Scheme)
+		return controllerutil.SetControllerReference(agentDeploy, rollout, r.Scheme)
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to reconcile Deployment: %w", err)
+		return fmt.Errorf("failed to reconcile Rollout: %w", err)
 	}
 
-	log.Info("Deployment reconciled",
-		"name", deploy.Name,
-		"result", result, // "created", "updated", or "unchanged"
+	log.Info("Rollout reconciled",
+		"name", rollout.Name,
+		"result", result,
+		"strategy", agentDeploy.Spec.Rollout.Strategy,
 	)
 	return nil
 }
 
+// buildArgoStrategy translates our AgentDeployment rollout config
+// into Argo Rollouts' strategy format.
+//
+// Key translation: our RolloutStep combines setWeight + pause + analysis
+// into a single struct. Argo Rollouts uses separate steps for each action.
+// So one of our steps may become 1-3 Argo steps.
+//
+// Example:
+//
+//	Our step:  { setWeight: 20, pause: {duration: "5m"}, analysis: {templateRef: "agent-quality-check"} }
+//	Argo steps: [ {setWeight: 20}, {pause: {duration: 5m}}, {analysis: {templates: [{templateName: "agent-quality-check"}]}} ]
+func buildArgoStrategy(agentDeploy *agentrollv1alpha1.AgentDeployment) rolloutsv1alpha1.RolloutStrategy {
+	if agentDeploy.Spec.Rollout.Strategy == "blueGreen" {
+		// Blue-green support is planned for Phase 3.
+		// For now, fall through to canary as default.
+		return rolloutsv1alpha1.RolloutStrategy{
+			BlueGreen: &rolloutsv1alpha1.BlueGreenStrategy{},
+		}
+	}
+
+	// Translate our steps to Argo canary steps
+	argoSteps := translateSteps(agentDeploy.Spec.Rollout.Steps)
+
+	return rolloutsv1alpha1.RolloutStrategy{
+		Canary: &rolloutsv1alpha1.CanaryStrategy{
+			Steps: argoSteps,
+		},
+	}
+}
+
+// translateSteps converts AgentRoll's combined steps into Argo Rollouts'
+// sequential step format.
+//
+// This function handles the impedance mismatch between our user-friendly
+// "one step = weight + pause + analysis" model and Argo's "each action is
+// a separate step" model. Our model is better for users (less YAML),
+// Argo's model is more flexible (arbitrary step ordering).
+func translateSteps(steps []agentrollv1alpha1.RolloutStep) []rolloutsv1alpha1.CanaryStep {
+	argoSteps := make([]rolloutsv1alpha1.CanaryStep, 0, len(steps)*3)
+
+	for _, step := range steps {
+		// Step 1: Set traffic weight
+		weight := step.SetWeight
+		argoSteps = append(argoSteps, rolloutsv1alpha1.CanaryStep{
+			SetWeight: &weight,
+		})
+
+		// Step 2: Pause (if specified)
+		if step.Pause != nil && step.Pause.Duration != "" {
+			argoSteps = append(argoSteps, rolloutsv1alpha1.CanaryStep{
+				Pause: &rolloutsv1alpha1.RolloutPause{
+					Duration: parseDuration(step.Pause.Duration),
+				},
+			})
+		}
+
+		// Step 3: Analysis (if specified)
+		if step.Analysis != nil {
+			argoSteps = append(argoSteps, rolloutsv1alpha1.CanaryStep{
+				Analysis: &rolloutsv1alpha1.RolloutAnalysis{
+					Templates: []rolloutsv1alpha1.AnalysisTemplateRef{
+						{
+							TemplateName: step.Analysis.TemplateRef,
+						},
+					},
+				},
+			})
+		}
+	}
+
+	return argoSteps
+}
+
+// parseDuration converts a duration string like "5m" to the Argo Rollouts
+// intstr format. Argo uses intstr.IntOrString for pause durations.
+func parseDuration(d string) *intstr.IntOrString {
+	duration := intstr.FromString(d)
+	return &duration
+}
+
+// reconcileAnalysisTemplate ensures a basic agent-quality-check
+// AnalysisTemplate exists in the agent's namespace.
+//
+// For MVP, we create a simple template that checks a web endpoint
+// for agent quality metrics. In Phase 3, this will be configurable
+// and support multiple observability backends (Langfuse, Arize, etc.).
+func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) error {
+	log := logf.FromContext(ctx)
+
+	// Check if any steps reference an analysis template
+	hasAnalysis := false
+	for _, step := range agentDeploy.Spec.Rollout.Steps {
+		if step.Analysis != nil {
+			hasAnalysis = true
+			break
+		}
+	}
+	if !hasAnalysis {
+		return nil
+	}
+
+	// Create the agent-quality-check AnalysisTemplate
+	template := &rolloutsv1alpha1.AnalysisTemplate{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "agent-quality-check",
+			Namespace: agentDeploy.Namespace,
+		},
+	}
+
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, template, func() error {
+		template.Labels = map[string]string{
+			"app.kubernetes.io/managed-by": "agentroll",
+			"agentroll.dev/template-type":  "quality",
+		}
+
+		template.Spec = rolloutsv1alpha1.AnalysisTemplateSpec{
+			Metrics: []rolloutsv1alpha1.Metric{
+				{
+					// For MVP, this is a simple success metric that always passes.
+					// It proves the integration works end-to-end.
+					// Phase 3 will replace this with real Langfuse/Prometheus queries.
+					Name:             "agent-health",
+					SuccessCondition: "result[0] == 1",
+					Provider: rolloutsv1alpha1.MetricProvider{
+						Job: &rolloutsv1alpha1.JobMetric{
+							Spec: batchJobSpec(),
+						},
+					},
+				},
+			},
+		}
+
+		// Note: AnalysisTemplate is NOT owned by a single AgentDeployment
+		// because multiple agents might share the same template.
+		// We skip SetControllerReference here intentionally.
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to reconcile AnalysisTemplate: %w", err)
+	}
+
+	log.Info("AnalysisTemplate reconciled",
+		"name", template.Name,
+		"result", result,
+	)
+	return nil
+}
+
+// batchJobSpec creates a simple Job that always succeeds.
+// This is a placeholder for MVP — it proves the Argo Analysis
+// integration works. Real implementations will query Langfuse,
+// Prometheus, or custom endpoints for agent quality metrics.
+func batchJobSpec() batchv1.JobSpec {
+	backoffLimit := int32(0)
+	return batchv1.JobSpec{
+		BackoffLimit: &backoffLimit,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers: []corev1.Container{
+					{
+						Name:    "analysis",
+						Image:   "busybox:latest",
+						Command: []string{"sh", "-c", "echo '[1]'"},
+					},
+				},
+			},
+		},
+	}
+}
+
 // reconcileService creates or updates the Kubernetes Service for the agent.
+// Unchanged from Sprint 1.
 func (r *AgentDeploymentReconciler) reconcileService(
 	ctx context.Context,
 	agentDeploy *agentrollv1alpha1.AgentDeployment,
 ) error {
 	log := logf.FromContext(ctx)
 
-	// Only create a Service if the agent exposes ports
 	if len(agentDeploy.Spec.Container.Ports) == 0 {
 		log.Info("No ports defined, skipping Service creation")
 		return nil
@@ -240,10 +400,7 @@ func (r *AgentDeploymentReconciler) reconcileService(
 		return fmt.Errorf("failed to reconcile Service: %w", err)
 	}
 
-	log.Info("Service reconciled",
-		"name", svc.Name,
-		"result", result,
-	)
+	log.Info("Service reconciled", "name", svc.Name, "result", result)
 	return nil
 }
 
@@ -253,9 +410,8 @@ func (r *AgentDeploymentReconciler) updateStatus(
 	agentDeploy *agentrollv1alpha1.AgentDeployment,
 	compositeVersion string,
 ) error {
-	// For MVP, we set the phase to Stable and record the composite version.
-	// In Phase 2, this will integrate with Argo Rollouts to reflect
-	// canary progress (Progressing, Degraded, RollingBack).
+	// TODO: In Phase 3, read the Argo Rollout status to determine
+	// the actual phase (Progressing during canary, Degraded on failure, etc.)
 	agentDeploy.Status.Phase = agentrollv1alpha1.PhaseStable
 	agentDeploy.Status.StableVersion = compositeVersion
 	agentDeploy.Status.ObservedGeneration = agentDeploy.Generation
@@ -263,31 +419,41 @@ func (r *AgentDeploymentReconciler) updateStatus(
 	return r.Status().Update(ctx, agentDeploy)
 }
 
+// ============================================================
+// Helper functions
+// ============================================================
+
+// buildLabels creates the standard label set for all resources.
+func buildLabels(agentDeploy *agentrollv1alpha1.AgentDeployment, compositeVersion string) map[string]string {
+	labels := map[string]string{
+		"app.kubernetes.io/name":          agentDeploy.Name,
+		"app.kubernetes.io/managed-by":    "agentroll",
+		"agentroll.dev/composite-version": compositeVersion,
+	}
+	if agentDeploy.Spec.AgentMeta.PromptVersion != "" {
+		labels["agentroll.dev/prompt-version"] = agentDeploy.Spec.AgentMeta.PromptVersion
+	}
+	if agentDeploy.Spec.AgentMeta.ModelVersion != "" {
+		labels["agentroll.dev/model-version"] = agentDeploy.Spec.AgentMeta.ModelVersion
+	}
+	return labels
+}
+
 // buildCompositeVersion creates a version string from the agent's 4-layer identity.
-// This is a key innovation of AgentRoll: tracking the combined state of
-// prompt + model + tools as a single deployable version.
 func buildCompositeVersion(agentDeploy *agentrollv1alpha1.AgentDeployment) string {
 	meta := agentDeploy.Spec.AgentMeta
-
 	prompt := meta.PromptVersion
 	if prompt == "" {
 		prompt = "default"
 	}
-
 	model := meta.ModelVersion
 	if model == "" {
 		model = "default"
 	}
-
-	// Format: prompt:model:imageTag
-	// e.g., "abc123:claude-sonnet-4-20250514:v2.1.0"
 	imageTag := extractImageTag(agentDeploy.Spec.Container.Image)
 	return fmt.Sprintf("%s.%s.%s", prompt, model, imageTag)
 }
 
-// extractImageTag gets the tag portion from a container image reference.
-// "myregistry/agent:v2.1.0" → "v2.1.0"
-// "myregistry/agent" → "latest"
 func extractImageTag(image string) string {
 	for i := len(image) - 1; i >= 0; i-- {
 		if image[i] == ':' {
@@ -300,7 +466,6 @@ func extractImageTag(image string) string {
 	return "latest"
 }
 
-// resourcesOrDefault returns the specified resources or sensible defaults.
 func resourcesOrDefault(res *corev1.ResourceRequirements) corev1.ResourceRequirements {
 	if res != nil {
 		return *res
@@ -308,7 +473,6 @@ func resourcesOrDefault(res *corev1.ResourceRequirements) corev1.ResourceRequire
 	return corev1.ResourceRequirements{}
 }
 
-// toServicePorts converts ContainerPorts to ServicePorts.
 func toServicePorts(containerPorts []corev1.ContainerPort) []corev1.ServicePort {
 	svcPorts := make([]corev1.ServicePort, 0, len(containerPorts))
 	for _, cp := range containerPorts {
@@ -323,12 +487,11 @@ func toServicePorts(containerPorts []corev1.ContainerPort) []corev1.ServicePort 
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// It watches AgentDeployment resources AND the Deployments/Services it owns.
-// If someone manually edits the Deployment, the controller will reconcile it back.
+// Sprint 2 change: Owns Rollout instead of Deployment.
 func (r *AgentDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentrollv1alpha1.AgentDeployment{}).
-		Owns(&appsv1.Deployment{}).
+		Owns(&rolloutsv1alpha1.Rollout{}).
 		Owns(&corev1.Service{}).
 		Named("agentdeployment").
 		Complete(r)

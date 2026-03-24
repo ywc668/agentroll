@@ -35,6 +35,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
 	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
 	"github.com/ywc668/agentroll/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -48,6 +49,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(rolloutsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(agentrollv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }

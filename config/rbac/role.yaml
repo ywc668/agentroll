@@ -43,9 +43,10 @@ rules:
   - patch
   - update
 - apiGroups:
-  - apps
+  - argoproj.io
   resources:
-  - deployments
+  - analysistemplates
+  - rollouts
   verbs:
   - create
   - delete
