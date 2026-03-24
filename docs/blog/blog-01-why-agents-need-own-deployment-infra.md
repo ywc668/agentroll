@@ -1,6 +1,6 @@
 # Why AI Agents Need Their Own Deployment Infrastructure
 
-*I've spent 7 years deploying services on Kubernetes. Last year, my team started deploying AI agents to production. That's when I realized everything I knew about safe deployments was suddenly inadequate.*
+*I've spent 9 years deploying services on Kubernetes. Last year, my team started deploying AI agents to production. That's when I realized everything I knew about safe deployments was suddenly inadequate.*
 
 ---
 
@@ -155,4 +155,4 @@ If you're a platform engineer deploying AI agents and feeling the pain I describ
 
 ---
 
-*[Max Li](https://github.com/ywc668) is a software infrastructure engineer with 7 years of experience in Kubernetes, Helm, Terraform, and cloud-native systems. He's building AgentRoll because he believes AI agents deserve the same deployment rigor as microservices.*
+*[Max Li](https://github.com/ywc668) is a software infrastructure engineer with 9 years of experience in Kubernetes, Helm, Terraform, and cloud-native systems. He's building AgentRoll because he believes AI agents deserve the same deployment rigor as microservices.*
