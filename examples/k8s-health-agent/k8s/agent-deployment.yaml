@@ -35,12 +35,12 @@ spec:
             name: llm-credentials
             key: anthropic-api-key
       - name: PROMPT_VERSION
-        value: "v2"
+        value: "v3"
       - name: LLM_MODEL
         value: "claude-sonnet-4-20250514"
 
   agentMeta:
-    promptVersion: "v2"
+    promptVersion: "v3"
     modelProvider: "anthropic"
     modelVersion: "claude-sonnet-4-20250514"
     labels:
