@@ -1,0 +1,21 @@
+apiVersion: v2
+name: agentroll
+description: Kubernetes-native progressive delivery for AI agents in production
+type: application
+version: 0.1.0
+appVersion: "0.1.0-alpha"
+home: https://github.com/ywc668/agentroll
+sources:
+  - https://github.com/ywc668/agentroll
+maintainers:
+  - name: Max Li
+    url: https://github.com/ywc668
+keywords:
+  - kubernetes
+  - ai-agents
+  - progressive-delivery
+  - canary
+  - argo-rollouts
+  - mlops
+  - llm
+icon: ""

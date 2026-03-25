@@ -1,0 +1,61 @@
+# AgentRoll Operator Helm Values
+# See https://github.com/ywc668/agentroll for documentation
+
+# Operator deployment configuration
+operator:
+  # Container image for the AgentRoll operator
+  image:
+    repository: ghcr.io/ywc668/agentroll
+    tag: "0.1.0-alpha"
+    pullPolicy: IfNotPresent
+
+  # Number of operator replicas (1 is fine — leader election handles HA)
+  replicas: 1
+
+  # Resource limits for the operator pod
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+  # ServiceAccount for the operator
+  serviceAccount:
+    create: true
+    name: agentroll-controller-manager
+
+  # Leader election (enable for HA deployments)
+  leaderElection:
+    enabled: true
+
+  # Metrics configuration
+  metrics:
+    enabled: true
+    port: 8443
+    secure: true
+
+  # Health probes
+  healthProbe:
+    port: 8081
+
+# Namespace to install the operator into
+namespace: agentroll-system
+
+# Install CRDs (set to false if managing CRDs separately)
+installCRDs: true
+
+# Argo Rollouts — AgentRoll requires Argo Rollouts to be installed
+# This chart does NOT install Argo Rollouts. Install it separately:
+#   kubectl create namespace argo-rollouts
+#   kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+argoRollouts:
+  # Set to true to skip the prerequisite check (not recommended)
+  skipCheck: false
+
+# Pre-built AnalysisTemplates to install
+analysisTemplates:
+  # Install the agent-quality-check template in these namespaces
+  # Set to empty list to skip
+  namespaces: []

@@ -1,0 +1,18 @@
+{{- if .Values.operator.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentroll.fullname" . }}-metrics
+  namespace: {{ include "agentroll.namespace" . }}
+  labels:
+    {{- include "agentroll.labels" . | nindent 4 }}
+spec:
+  ports:
+    - port: {{ .Values.operator.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+  selector:
+    control-plane: controller-manager
+    {{- include "agentroll.selectorLabels" . | nindent 4 }}
+{{- end }}

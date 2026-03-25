@@ -1,0 +1,46 @@
+🎯 AgentRoll has been installed successfully!
+
+Namespace: {{ include "agentroll.namespace" . }}
+
+PREREQUISITES:
+  Argo Rollouts must be installed in your cluster. If not already installed:
+
+    kubectl create namespace argo-rollouts
+    kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+QUICK START:
+  1. Create an AgentDeployment:
+
+    cat <<EOF | kubectl apply -f -
+    apiVersion: agentroll.dev/v1alpha1
+    kind: AgentDeployment
+    metadata:
+      name: my-agent
+    spec:
+      replicas: 2
+      container:
+        image: my-agent:v1
+        ports:
+          - containerPort: 8080
+      agentMeta:
+        promptVersion: "v1"
+        modelVersion: "claude-sonnet-4"
+      rollout:
+        strategy: canary
+        steps:
+          - setWeight: 20
+            pause: { duration: "30s" }
+            analysis: { templateRef: agent-quality-check }
+          - setWeight: 100
+    EOF
+
+  2. Check status:
+
+    kubectl get agentdeployments
+    kubectl get rollouts
+
+DOCUMENTATION:
+  https://github.com/ywc668/agentroll
+
+BLOG:
+  https://dev.to/ywc668/why-ai-agents-need-their-own-deployment-infrastructure
