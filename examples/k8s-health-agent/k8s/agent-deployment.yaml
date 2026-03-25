@@ -1,0 +1,60 @@
+# Deploy the K8s Health Check Agent using AgentRoll.
+#
+# This is the dogfooding example — we use our own tool to deploy
+# and manage a real AI agent with progressive delivery.
+#
+# Prerequisites:
+#   1. AgentRoll operator running (make run)
+#   2. Argo Rollouts installed
+#   3. RBAC applied (kubectl apply -f k8s/rbac.yaml)
+#   4. API key secret created:
+#      kubectl create secret generic llm-credentials \
+#        --from-literal=anthropic-api-key=YOUR_KEY
+
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: k8s-health-agent
+  namespace: default
+  labels:
+    app: k8s-health-agent
+    purpose: dogfooding
+spec:
+  replicas: 1
+
+  container:
+    image: k8s-health-agent:v1
+    ports:
+      - containerPort: 8080
+        name: http
+    env:
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: llm-credentials
+            key: anthropic-api-key
+      - name: PROMPT_VERSION
+        value: "v2"
+      - name: LLM_MODEL
+        value: "claude-sonnet-4-20250514"
+
+  agentMeta:
+    promptVersion: "v2"
+    modelProvider: "anthropic"
+    modelVersion: "claude-sonnet-4-20250514"
+    labels:
+      domain: devops
+      purpose: dogfooding
+
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 50
+        pause:
+          duration: "2m"
+        analysis:
+          templateRef: agent-quality-check
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true
