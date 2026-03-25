@@ -21,6 +21,7 @@ metadata:
     purpose: dogfooding
 spec:
   replicas: 1
+  serviceAccountName: k8s-health-agent
 
   container:
     image: k8s-health-agent:v1

@@ -39,6 +39,12 @@ type AgentDeploymentSpec struct {
 	// +optional
 	Scaling *ScalingSpec `json:"scaling,omitempty"`
 
+	// ServiceAccountName is the Kubernetes ServiceAccount for the agent pods.
+	// Agents often need specific RBAC permissions (e.g., read cluster resources).
+	// If not set, the default ServiceAccount of the namespace is used.
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
 	// Replicas is the desired number of agent pod replicas.
 	// Ignored if Scaling is configured.
 	// +optional

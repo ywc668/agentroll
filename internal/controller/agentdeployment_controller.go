@@ -154,6 +154,7 @@ func (r *AgentDeploymentReconciler) reconcileRollout(
 					Labels: labels,
 				},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: agentDeploy.Spec.ServiceAccountName,
 					Containers: []corev1.Container{
 						{
 							Name:      "agent",
