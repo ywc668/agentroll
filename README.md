@@ -30,6 +30,8 @@ Today, most teams deploy agents the same way they deploy microservices — `dock
 
 **The result?** 70% of regulated enterprises rebuild their agent stack every 3 months. Teams manually eyeball evaluation results. Nobody knows if the new version is actually better until users complain.
 
+Read more: [Why AI Agents Need Their Own Deployment Infrastructure](https://dev.to/ywc668/why-ai-agents-need-their-own-deployment-infrastructure) (blog post)
+
 ## The Solution
 
 AgentRoll brings **evaluation-gated progressive delivery** to AI agent deployments on Kubernetes. Think of it as [Argo Rollouts](https://argoproj.github.io/rollouts/) meets agent-aware intelligence.
@@ -65,18 +67,19 @@ AgentRoll brings **evaluation-gated progressive delivery** to AI agent deploymen
 
 ## Key Features
 
-> ⚠️ **AgentRoll is in early alpha.** We're building in public. Features below represent our roadmap — check the status column for current availability.
+> ⚠️ **AgentRoll is in early alpha.** We're building in public — contributions and feedback welcome.
 
 | Feature | Description | Status |
 |---------|-------------|--------|
-| **AgentDeployment CRD** | Declare your agent's complete deployable config as a Kubernetes custom resource | 🔨 Building |
-| **Evaluation-Gated Canary** | Progressive rollout with agent-quality gates (hallucination rate, tool success rate, cost-per-task) | 🔨 Building |
-| **Argo Rollouts Integration** | Built on top of Argo Rollouts — not reinventing the wheel | 🔨 Building |
-| **Agent AnalysisTemplates** | Pre-built quality metric templates for common agent patterns | 📋 Planned |
-| **Langfuse Integration** | Out-of-the-box agent trace data as canary analysis source | 📋 Planned |
+| **AgentDeployment CRD** | Declare your agent's complete deployable config as a Kubernetes custom resource | ✅ Done |
+| **Composite Version Tracking** | Track prompt + model + image tag as a single versioned entity via Pod labels | ✅ Done |
+| **Argo Rollouts Integration** | Automatic translation of AgentDeployment to Argo Rollout with canary steps | ✅ Done |
+| **Evaluation-Gated Canary** | Progressive rollout with agent-quality gates (hallucination rate, tool success rate, cost-per-task) | ⚠️ Scaffolded |
+| **3-Layer AnalysisTemplate** | Pre-built defaults, user override, or fully custom — opinionated defaults with full escape hatches | ✅ Done |
+| **Auto Service Creation** | Automatic Kubernetes Service creation when agent exposes ports | ✅ Done |
+| **Langfuse Integration** | Agent trace data as canary analysis source | 📋 Planned |
 | **OTel Observability** | Auto-injected OpenTelemetry sidecar for agent tracing | 📋 Planned |
 | **Grafana Dashboards** | Pre-built dashboards for agent-specific metrics | 📋 Planned |
-| **Composite Versioning** | Track prompt + model + tools + memory as a single versioned entity | 📋 Planned |
 | **Cost-Aware Scaling** | KEDA-based autoscaling with queue-depth metrics and token budgets | 🗓️ Future |
 | **MCP Tool Lifecycle** | Manage MCP tool server versions alongside agents | 🗓️ Future |
 | **Multi-Agent Coordination** | Coordinated canary deployments across dependent agents | 🗓️ Future |
@@ -93,44 +96,105 @@ AgentRoll brings **evaluation-gated progressive delivery** to AI agent deploymen
 │                   AgentRoll Operator                        │
 │                                                            │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐ │
-│  │    CRD       │  │   Rollout    │  │    Analysis      │ │
-│  │  Controller  │  │   Manager    │  │    Engine        │ │
+│  │    CRD       │  │   Rollout    │  │  AnalysisTemplate│ │
+│  │  Controller  │  │   Manager    │  │    Manager       │ │
 │  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘ │
 │         │                 │                    │           │
 │         ▼                 ▼                    ▼           │
-│  AgentDeployment    Argo Rollouts       Langfuse / OTel   │
-│  CRD               (rollout engine)     (data sources)    │
+│  AgentDeployment    Argo Rollouts       3-Layer Template   │
+│  CRD               (canary engine)     (default/override/ │
+│                                         custom)           │
 └──────────────────────────┬─────────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────────┐
 │                   Kubernetes Cluster                        │
 │                                                            │
 │  ┌────────────┐  ┌────────────┐  ┌──────────────────────┐ │
-│  │ Agent Pod  │  │ Agent Pod  │  │  OTel Sidecar        │ │
-│  │ v1 (stable)│  │ v2 (canary)│  │  (per pod)           │ │
+│  │ Agent Pod  │  │ Agent Pod  │  │  Composite Version   │ │
+│  │ v1 (stable)│  │ v2 (canary)│  │  Labels on each Pod  │ │
 │  └────────────┘  └────────────┘  └──────────────────────┘ │
 │                                                            │
-│  ┌──────────────────────────────────────────────────────┐ │
-│  │  Prometheus  /  Grafana  /  Langfuse                 │ │
-│  │  (agent metrics collection & visualization)          │ │
-│  └──────────────────────────────────────────────────────┘ │
+│  Labels: agentroll.dev/prompt-version=v1                   │
+│          agentroll.dev/model-version=claude-sonnet-4       │
+│          agentroll.dev/composite-version=v1.claude-sonnet..│
 └────────────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
 
-> 🚧 Coming soon. AgentRoll is currently in active development.
+### Prerequisites
+
+- Kubernetes cluster (kind, minikube, or remote)
+- [Argo Rollouts](https://argoproj.github.io/argo-rollouts/installation/) installed on the cluster
+- kubectl configured
+
+### Install and Run
 
 ```bash
-# Install AgentRoll operator (coming soon)
-helm repo add agentroll https://ywc668.github.io/agentroll
-helm install agentroll agentroll/agentroll-operator
+# Clone the repo
+git clone https://github.com/ywc668/agentroll.git
+cd agentroll
 
-# Deploy your first agent with progressive delivery
-kubectl apply -f examples/basic-agent-deployment.yaml
+# Install CRD to your cluster
+make install
+
+# Run the operator locally (development mode)
+make run
 ```
 
-## AgentDeployment CRD (Preview)
+### Deploy Your First Agent
+
+In a separate terminal:
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: my-agent
+  namespace: default
+spec:
+  replicas: 2
+  container:
+    image: nginx:latest
+    ports:
+      - containerPort: 80
+        name: http
+  agentMeta:
+    promptVersion: "v1"
+    modelVersion: "claude-sonnet-4"
+    modelProvider: "anthropic"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+        pause: { duration: "30s" }
+        analysis: { templateRef: agent-quality-check }
+      - setWeight: 50
+        pause: { duration: "30s" }
+      - setWeight: 100
+EOF
+```
+
+### Verify
+
+```bash
+# See your AgentDeployment with composite version
+kubectl get agentdeployments
+# NAME       PHASE    STABLE                      CANARY   WEIGHT   AGE
+# my-agent   Stable   v1.claude-sonnet-4.latest            0        30s
+
+# See the Argo Rollout (not a plain Deployment!)
+kubectl get rollouts
+
+# See composite version labels on pods
+kubectl get pods --show-labels
+
+# See auto-created Service
+kubectl get services
+```
+
+## AgentDeployment CRD
 
 ```yaml
 apiVersion: agentroll.dev/v1alpha1
@@ -138,6 +202,7 @@ kind: AgentDeployment
 metadata:
   name: customer-support-agent
 spec:
+  # Framework-agnostic: works with LangGraph, CrewAI, OpenAI Agents SDK, or any container
   container:
     image: myregistry/support-agent:v2.1.0
     env:
@@ -146,43 +211,51 @@ spec:
       - name: LLM_MODEL
         value: claude-sonnet-4-20250514
 
+  # The 4-layer composite version — what makes agents different from microservices
   agentMeta:
-    promptVersion: "abc123"
+    promptVersion: "abc123"          # Git commit ref
     modelVersion: "claude-sonnet-4-20250514"
     toolDependencies:
       - name: crm-mcp-server
         version: ">=1.2.0"
 
+  # Progressive delivery with evaluation gates
   rollout:
     strategy: canary
     steps:
       - setWeight: 5
-        pause: { duration: 5m }
-        analysis:
-          templateRef: agent-quality-check
+        pause: { duration: "5m" }
+        analysis: { templateRef: agent-quality-check }   # Use built-in template
       - setWeight: 20
-        pause: { duration: 10m }
-        analysis:
-          templateRef: agent-quality-check
+        pause: { duration: "10m" }
+        analysis: { templateRef: my-custom-eval }         # Or bring your own
       - setWeight: 100
 
+  # Auto-rollback on quality degradation or cost spike
   rollback:
     onFailedAnalysis: true
     onCostSpike:
-      threshold: 200%
+      threshold: "200%"
 
-  observability:
-    langfuse:
-      endpoint: "https://langfuse.internal"
-    opentelemetry:
-      enabled: true
-
+  # Queue-depth scaling (not CPU — agents are I/O bound)
   scaling:
     minReplicas: 2
     maxReplicas: 10
     metric: queue-depth
     targetValue: 5
 ```
+
+## AnalysisTemplate: 3-Layer Design
+
+AgentRoll uses a principled approach to evaluation templates:
+
+| Layer | Behavior | Example |
+|-------|----------|---------|
+| **Managed default** | AgentRoll auto-creates templates like `agent-quality-check` with sensible defaults | Zero config needed |
+| **User override** | Create your own template with the same name (without `managed-by: agentroll` label) — AgentRoll won't overwrite it | Full control, familiar name |
+| **Fully custom** | Reference any template name — AgentRoll assumes you manage it entirely | Maximum flexibility |
+
+**Philosophy: opinionated defaults, full escape hatches.**
 
 ## Why Not Just Use...?
 
@@ -191,19 +264,20 @@ spec:
 | **Argo Rollouts** | Progressive delivery for any K8s workload | Doesn't understand agent health metrics (hallucination rate, tool success, cost-per-task) |
 | **LangSmith Deploy** | Deep LangGraph integration | Commercial license required; LangGraph only; no progressive delivery |
 | **Kagent** | K8s-native agent CRDs | Focused on SRE/DevOps agents, not general agent deployment lifecycle |
-| **AWS AgentCore** | Fully managed agent runtime | Vendor lock-in; no progressive delivery; no open-source |
+| **AWS AgentCore** | Fully managed agent runtime | Vendor lock-in; no progressive delivery; not open-source |
 | **Plain K8s Deployment** | Simple, well-understood | No canary, no eval gates, no agent-aware rollback |
 
-**AgentRoll** = Argo Rollouts' progressive delivery + agent-aware quality signals + framework-agnostic design.
+**AgentRoll** = Argo Rollouts' progressive delivery engine + agent-aware quality signals + framework-agnostic design.
 
 ## Roadmap
 
-- **Phase 0 (Current)** — Project setup, CRD design, community foundation
-- **Phase 1** — MVP: AgentDeployment CRD + Argo Rollouts integration + Langfuse analysis
-- **Phase 2** — Production hardening: multi-framework validation, Terraform modules, security
-- **Phase 3** — Ecosystem: MCP tool lifecycle, A2A coordination, KEDA scaling, multi-agent deployment
-
-See our [detailed roadmap](docs/ROADMAP.md) for more information.
+- **Phase 0** ✅ — Project setup, CRD design, community foundation
+- **Phase 1 Sprint 1** ✅ — Core controller: AgentDeployment → Deployment + Service
+- **Phase 1 Sprint 2** ✅ — Argo Rollouts integration with canary strategy + 3-layer AnalysisTemplate
+- **Phase 1 Sprint 2.5** 🔨 — Dogfooding: build and deploy a real agent with AgentRoll
+- **Phase 1 Sprint 3** 📋 — Observability: OTel sidecar, Grafana dashboards, real analysis metrics
+- **Phase 2** 📋 — Production hardening: Helm chart, Terraform modules, multi-framework validation
+- **Phase 3** 🗓️ — Ecosystem: MCP tool lifecycle, A2A coordination, KEDA scaling
 
 ## Contributing
 
@@ -214,17 +288,11 @@ We welcome contributions! AgentRoll is in its earliest stages — now is the bes
 - 💬 [Join discussions](https://github.com/ywc668/agentroll/discussions)
 - 📖 [Read contributing guide](CONTRIBUTING.md)
 
-## Background & Motivation
+## Background
 
-This project was born from real-world experience managing release orchestration for cloud infrastructure at scale, combined with deep research into the AI agent deployment landscape. Key observations:
-
-- **57% of organizations** now have agents in production, but most deploy them like traditional microservices
-- **70% of regulated enterprises** rebuild their agent stack every 3 months
-- Agent frameworks assume you'll solve deployment yourself — because it's genuinely hard
-- The CNCF ecosystem is actively embracing agent infrastructure (Kagent, Agent Sandbox, KubeCon Agentics Day 2026)
-- No open-source tool treats agents as first-class deployable units with evaluation-gated progressive delivery
-
-For a deep dive into the landscape research, see our [Architecture Decision Records](docs/adr/).
+Read the full story behind AgentRoll:
+- 📝 [Why AI Agents Need Their Own Deployment Infrastructure](https://dev.to/ywc668/why-ai-agents-need-their-own-deployment-infrastructure) — the problem definition
+- 📐 [ADR-001: Build on Argo Rollouts](docs/adr/001-build-on-argo-rollouts.md) — why we extend rather than reinvent
 
 ## License
 
