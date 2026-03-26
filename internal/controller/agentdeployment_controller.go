@@ -23,6 +23,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -52,6 +53,7 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=argoproj.io,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=argoproj.io,resources=analysistemplates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -82,6 +84,12 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Step 3.5: Reconcile OTel ConfigMap (if enabled)
+	if err := r.reconcileOTelConfig(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile OTel ConfigMap")
+		return ctrl.Result{}, err
+	}
+
 	// Step 4: Reconcile Argo Rollout
 	if err := r.reconcileRollout(ctx, agentDeploy, compositeVersion); err != nil {
 		log.Error(err, "failed to reconcile Rollout")
@@ -102,6 +110,111 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	log.Info("Successfully reconciled AgentDeployment", "name", agentDeploy.Name)
 	return ctrl.Result{}, nil
+}
+
+// reconcileOTelConfig creates or updates the OTel Collector configuration ConfigMap.
+// The sidecar reads this config to know how to receive, process, and export traces.
+func (r *AgentDeploymentReconciler) reconcileOTelConfig(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) error {
+	// Skip if OTel not enabled
+	if agentDeploy.Spec.Observability == nil ||
+		agentDeploy.Spec.Observability.OpenTelemetry == nil ||
+		!agentDeploy.Spec.Observability.OpenTelemetry.Enabled {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+
+	collectorEndpoint := "otel-collector.monitoring:4317"
+	if agentDeploy.Spec.Observability.OpenTelemetry.CollectorEndpoint != "" {
+		collectorEndpoint = agentDeploy.Spec.Observability.OpenTelemetry.CollectorEndpoint
+	}
+
+	// OTel Collector config that:
+	// - Receives traces via OTLP (gRPC on 4317, HTTP on 4318)
+	// - Batches them for efficiency
+	// - Adds agent metadata as resource attributes
+	// - Exports to the configured endpoint
+	otelConfig := fmt.Sprintf(`receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+  resource:
+    attributes:
+      - key: agentroll.agent.name
+        value: "%s"
+        action: upsert
+      - key: agentroll.prompt.version
+        value: "%s"
+        action: upsert
+      - key: agentroll.model.version
+        value: "%s"
+        action: upsert
+      - key: agentroll.composite.version
+        value: "%s"
+        action: upsert
+
+exporters:
+  otlp:
+    endpoint: "%s"
+    tls:
+      insecure: true
+  logging:
+    loglevel: info
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlp, logging]
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlp, logging]
+`,
+		agentDeploy.Name,
+		agentDeploy.Spec.AgentMeta.PromptVersion,
+		agentDeploy.Spec.AgentMeta.ModelVersion,
+		buildCompositeVersion(agentDeploy),
+		collectorEndpoint,
+	)
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("%s-otel-config", agentDeploy.Name),
+			Namespace: agentDeploy.Namespace,
+		},
+	}
+
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Labels = map[string]string{
+			"app.kubernetes.io/name":       agentDeploy.Name,
+			"app.kubernetes.io/managed-by": "agentroll",
+			"agentroll.dev/component":      "otel-config",
+		}
+		cm.Data = map[string]string{
+			"config.yaml": otelConfig,
+		}
+		return controllerutil.SetControllerReference(agentDeploy, cm, r.Scheme)
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to reconcile OTel ConfigMap: %w", err)
+	}
+
+	log.Info("OTel ConfigMap reconciled", "name", cm.Name, "result", result)
+	return nil
 }
 
 // reconcileRollout creates or updates an Argo Rollout for the agent.
@@ -141,20 +254,7 @@ func (r *AgentDeploymentReconciler) reconcileRollout(
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
 				},
-				Spec: corev1.PodSpec{
-					ServiceAccountName: agentDeploy.Spec.ServiceAccountName,
-					Containers: []corev1.Container{
-						{
-							Name:      "agent",
-							Image:     agentDeploy.Spec.Container.Image,
-							Env:       agentDeploy.Spec.Container.Env,
-							Ports:     agentDeploy.Spec.Container.Ports,
-							Command:   agentDeploy.Spec.Container.Command,
-							Args:      agentDeploy.Spec.Container.Args,
-							Resources: resourcesOrDefault(agentDeploy.Spec.Container.Resources),
-						},
-					},
-				},
+				Spec: buildPodSpec(agentDeploy),
 			},
 			Strategy: buildArgoStrategy(agentDeploy),
 		}
@@ -486,6 +586,106 @@ func buildCompositeVersion(agentDeploy *agentrollv1alpha1.AgentDeployment) strin
 	}
 	imageTag := extractImageTag(agentDeploy.Spec.Container.Image)
 	return fmt.Sprintf("%s.%s.%s", prompt, model, imageTag)
+}
+
+// buildPodSpec constructs the Pod spec, optionally injecting an OTel sidecar.
+// When observability.opentelemetry.enabled is true, we:
+//  1. Add an OTel Collector sidecar container
+//  2. Inject OTEL_EXPORTER_OTLP_ENDPOINT env var into the agent container
+//     pointing to the sidecar on localhost:4318
+//
+// This means the agent just needs to use any OpenTelemetry SDK — the sidecar
+// handles collection, batching, and export to the final destination.
+func buildPodSpec(agentDeploy *agentrollv1alpha1.AgentDeployment) corev1.PodSpec {
+	// Build the agent container
+	agentContainer := corev1.Container{
+		Name:      "agent",
+		Image:     agentDeploy.Spec.Container.Image,
+		Env:       agentDeploy.Spec.Container.Env,
+		Ports:     agentDeploy.Spec.Container.Ports,
+		Command:   agentDeploy.Spec.Container.Command,
+		Args:      agentDeploy.Spec.Container.Args,
+		Resources: resourcesOrDefault(agentDeploy.Spec.Container.Resources),
+	}
+
+	containers := []corev1.Container{agentContainer}
+	var volumes []corev1.Volume
+
+	// Inject OTel sidecar if enabled
+	if agentDeploy.Spec.Observability != nil &&
+		agentDeploy.Spec.Observability.OpenTelemetry != nil &&
+		agentDeploy.Spec.Observability.OpenTelemetry.Enabled {
+
+		// Inject OTEL env var into agent container so it sends traces to the sidecar
+		otelEndpoint := "http://localhost:4318"
+		containers[0].Env = append(containers[0].Env, corev1.EnvVar{
+			Name:  "OTEL_EXPORTER_OTLP_ENDPOINT",
+			Value: otelEndpoint,
+		})
+
+		// Determine export endpoint
+		collectorEndpoint := "http://otel-collector.monitoring:4317"
+		if agentDeploy.Spec.Observability.OpenTelemetry.CollectorEndpoint != "" {
+			collectorEndpoint = agentDeploy.Spec.Observability.OpenTelemetry.CollectorEndpoint
+		}
+
+		// OTel Collector sidecar
+		sidecar := corev1.Container{
+			Name:  "otel-sidecar",
+			Image: "otel/opentelemetry-collector-contrib:0.98.0",
+			Args:  []string{"--config=/etc/otelcol/config.yaml"},
+			Ports: []corev1.ContainerPort{
+				{ContainerPort: 4317, Name: "otlp-grpc", Protocol: corev1.ProtocolTCP},
+				{ContainerPort: 4318, Name: "otlp-http", Protocol: corev1.ProtocolTCP},
+				{ContainerPort: 8888, Name: "metrics", Protocol: corev1.ProtocolTCP},
+			},
+			Env: []corev1.EnvVar{
+				{Name: "OTEL_EXPORT_ENDPOINT", Value: collectorEndpoint},
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "otel-config",
+					MountPath: "/etc/otelcol",
+					ReadOnly:  true,
+				},
+			},
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    mustParseQuantity("10m"),
+					corev1.ResourceMemory: mustParseQuantity("64Mi"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    mustParseQuantity("100m"),
+					corev1.ResourceMemory: mustParseQuantity("128Mi"),
+				},
+			},
+		}
+
+		containers = append(containers, sidecar)
+
+		// ConfigMap volume for OTel config
+		volumes = append(volumes, corev1.Volume{
+			Name: "otel-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: fmt.Sprintf("%s-otel-config", agentDeploy.Name),
+					},
+				},
+			},
+		})
+	}
+
+	return corev1.PodSpec{
+		ServiceAccountName: agentDeploy.Spec.ServiceAccountName,
+		Containers:         containers,
+		Volumes:            volumes,
+	}
+}
+
+// mustParseQuantity parses a resource quantity string, panics on invalid input.
+func mustParseQuantity(s string) resource.Quantity {
+	return resource.MustParse(s)
 }
 
 func extractImageTag(image string) string {

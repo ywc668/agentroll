@@ -1,0 +1,258 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "AgentRoll — AI Agent deployment metrics and health overview",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Agent Deployments Overview",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "count(kube_customresource_agentdeployment_info)",
+          "legendFormat": "Total Agents"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Active Canary Rollouts",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        {
+          "expr": "count(argo_rollouts_info{strategy=\"canary\",phase=\"Progressing\"})",
+          "legendFormat": "In Progress"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Analysis Results (Last 24h)",
+      "type": "piechart",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "count(argo_rollouts_analysis_run_info{phase=\"Successful\"})",
+          "legendFormat": "Passed"
+        },
+        {
+          "expr": "count(argo_rollouts_analysis_run_info{phase=\"Failed\"})",
+          "legendFormat": "Failed"
+        }
+      ]
+    },
+    {
+      "title": "Rollback Events (Last 7d)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "count(argo_rollouts_info{phase=\"Degraded\"})",
+          "legendFormat": "Rollbacks"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Agent Response Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(agent_request_duration_seconds_bucket{agent=~\"$agent\"}[5m])) by (le, agent))",
+          "legendFormat": "{{ agent }} p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(agent_request_duration_seconds_bucket{agent=~\"$agent\"}[5m])) by (le, agent))",
+          "legendFormat": "{{ agent }} p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(agent_request_duration_seconds_bucket{agent=~\"$agent\"}[5m])) by (le, agent))",
+          "legendFormat": "{{ agent }} p99"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "title": "Token Consumption per Agent",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "sum(rate(agent_tokens_total{agent=~\"$agent\"}[5m])) by (agent, token_type)",
+          "legendFormat": "{{ agent }} — {{ token_type }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 50,
+            "stacking": { "mode": "normal" }
+          }
+        }
+      }
+    },
+    {
+      "title": "Tool Call Success Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(agent_tool_calls_total{status=\"success\", agent=~\"$agent\"}[5m])) by (agent) / sum(rate(agent_tool_calls_total{agent=~\"$agent\"}[5m])) by (agent) * 100",
+          "legendFormat": "{{ agent }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "green", "value": 95 }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "title": "Requests per Agent (by Prompt Version)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "sum(rate(agent_requests_total{agent=~\"$agent\"}[5m])) by (agent, prompt_version)",
+          "legendFormat": "{{ agent }} — prompt={{ prompt_version }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "title": "Estimated Cost per Hour (USD)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "description": "Estimated cost based on token consumption. Uses approximate pricing: $3/M input tokens, $15/M output tokens for Claude Sonnet.",
+      "targets": [
+        {
+          "expr": "(sum(rate(agent_tokens_total{token_type=\"input\", agent=~\"$agent\"}[1h])) by (agent) * 3 + sum(rate(agent_tokens_total{token_type=\"output\", agent=~\"$agent\"}[1h])) by (agent) * 15) / 1000000 * 3600",
+          "legendFormat": "{{ agent }}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20
+          }
+        }
+      }
+    },
+    {
+      "title": "Canary vs Stable — Latency Comparison",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "description": "Compare response latency between stable and canary versions during a rollout.",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(agent_request_duration_seconds_bucket{agent=~\"$agent\", composite_version=~\".*\"}[5m])) by (le, composite_version))",
+          "legendFormat": "{{ composite_version }} p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "agent",
+        "type": "query",
+        "query": "label_values(agent_requests_total, agent)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "title": "AgentRoll — Agent Health & Deployment Metrics",
+  "uid": "agentroll-agent-health",
+  "version": 1,
+  "schemaVersion": 39
+}
