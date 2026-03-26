@@ -542,17 +542,77 @@ func (r *AgentDeploymentReconciler) reconcileService(
 	return nil
 }
 
-// updateStatus writes the current state back to the AgentDeployment status.
+// updateStatus reads the Argo Rollout's real status and maps it to AgentDeployment status.
+// This is the key improvement from Sprint 2 — instead of always showing "Stable",
+// users can now see the actual canary progress via kubectl get agentdeployments.
 func (r *AgentDeploymentReconciler) updateStatus(
 	ctx context.Context,
 	agentDeploy *agentrollv1alpha1.AgentDeployment,
 	compositeVersion string,
 ) error {
-	agentDeploy.Status.Phase = agentrollv1alpha1.PhaseStable
-	agentDeploy.Status.StableVersion = compositeVersion
+	log := logf.FromContext(ctx)
+
+	// Fetch the Argo Rollout to read its real status
+	rollout := &rolloutsv1alpha1.Rollout{}
+	err := r.Get(ctx, client.ObjectKey{
+		Name:      agentDeploy.Name,
+		Namespace: agentDeploy.Namespace,
+	}, rollout)
+
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Rollout doesn't exist yet — we're in initial creation
+			agentDeploy.Status.Phase = agentrollv1alpha1.PhasePending
+		} else {
+			return fmt.Errorf("failed to get Rollout status: %w", err)
+		}
+	} else {
+		// Map Argo Rollout phase to AgentDeployment phase
+		agentDeploy.Status.Phase = mapRolloutPhase(rollout)
+
+		// Always set composite version as stable version
+		agentDeploy.Status.StableVersion = compositeVersion
+
+		// Extract canary weight from traffic weights (if available)
+		if rollout.Status.Canary.Weights != nil {
+			agentDeploy.Status.CanaryWeight = rollout.Status.Canary.Weights.Canary.Weight
+		} else {
+			agentDeploy.Status.CanaryWeight = 0
+		}
+
+		log.Info("Status synced from Rollout",
+			"phase", agentDeploy.Status.Phase,
+			"stableVersion", agentDeploy.Status.StableVersion,
+			"canaryWeight", agentDeploy.Status.CanaryWeight,
+		)
+	}
+
 	agentDeploy.Status.ObservedGeneration = agentDeploy.Generation
 
 	return r.Status().Update(ctx, agentDeploy)
+}
+
+// mapRolloutPhase translates Argo Rollout's phase string to AgentDeployment phase.
+//
+// Argo Rollout phases: "Progressing", "Paused", "Healthy", "Degraded"
+// AgentDeployment phases: Pending, Progressing, Stable, Degraded, RollingBack
+func mapRolloutPhase(rollout *rolloutsv1alpha1.Rollout) agentrollv1alpha1.AgentDeploymentPhase {
+	phase := rollout.Status.Phase
+
+	switch phase {
+	case rolloutsv1alpha1.RolloutPhaseHealthy:
+		return agentrollv1alpha1.PhaseStable
+	case rolloutsv1alpha1.RolloutPhaseProgressing:
+		return agentrollv1alpha1.PhaseProgressing
+	case rolloutsv1alpha1.RolloutPhasePaused:
+		// Paused means waiting at a canary step — still progressing from user's perspective
+		return agentrollv1alpha1.PhaseProgressing
+	case rolloutsv1alpha1.RolloutPhaseDegraded:
+		return agentrollv1alpha1.PhaseDegraded
+	default:
+		// Unknown or empty phase — treat as pending
+		return agentrollv1alpha1.PhasePending
+	}
 }
 
 // ============================================================
