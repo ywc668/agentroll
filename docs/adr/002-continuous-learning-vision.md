@@ -54,3 +54,40 @@ No existing tool does this end-to-end.
 ## References
 - Microsoft Agent Lightning: https://github.com/microsoft/agent-lightning
 - AgentRoll ADR-001: Build on Argo Rollouts
+
+## Strategic Positioning
+
+AgentRoll's role is NOT to do training or distillation itself. It provides the
+**standardized infrastructure base** — deployment, observation, evaluation,
+progressive delivery — that companies with GPU resources can plug their own
+training pipelines into.
+
+This mirrors Kubernetes' success path: Google didn't open-source Borg. They
+extracted core abstractions (Pod, Service, Deployment) that any company could
+run on their own infrastructure.
+
+AgentRoll defines core abstractions for **agent lifecycle management**:
+- AgentDeployment (deployment unit)
+- Composite Version (4-layer version identity)
+- Evaluation-gated canary (progressive delivery)
+- AnalysisTemplate (quality signals)
+
+### Extension Points to Pre-define (implement later)
+
+1. **Trace Collection Interface** — standardized output format for agent
+   execution trajectories and reward signals. Upstream consumers: Agent
+   Lightning, DSPy, custom RL pipelines.
+
+2. **Model/Prompt Artifact Interface** — receive new model weights or
+   optimized prompts from training pipelines, trigger progressive delivery
+   automatically. This closes the loop.
+
+### Adoption Strategy
+
+Large companies adopt open-source infra based on:
+- "Does it solve a real pain point nobody else solved?" ✅ (agent-safe deployment)
+- "Can I see evidence it works in a real environment?" (need dogfooding proof)
+- NOT "how many features does it have"
+
+The opportunity window: no open-source tool does agent-aware progressive
+delivery well right now. First mover advantage matters.
