@@ -1,0 +1,93 @@
+# Bad Canary Demo — AgentRoll Quality Gate Validation
+#
+# This manifest demonstrates that AgentRoll's quality gates can detect and block
+# a degraded agent from being promoted to stable.
+#
+# What happens when you apply this:
+#   1. The canary runs agent.py with PROMPT_VERSION=degraded-v2
+#   2. The degraded prompt tells Claude not to use any tools and give very brief answers
+#   3. The analysis runner (runner.py) sends test queries to the canary
+#   4. Two checks fail:
+#        - response_length: responses are < 50 chars (degraded prompt produces ~20 char answers)
+#        - tool_usage: 0 tool calls made (expected >= 1)
+#   5. AnalysisRun fails → Argo Rollouts triggers rollback → canary is never promoted
+#
+# How to run this demo:
+#   kubectl apply -f rbac.yaml          # if not already applied
+#   kubectl apply -f bad-canary-demo.yaml
+#   kubectl get agentdeployment k8s-health-agent -w    # watch the phase change
+#   kubectl get analysisrun -w                          # watch the analysis fail
+#   # Expected final phase: RollingBack → Stable (rolled back to previous version)
+#
+# Prerequisites:
+#   - AgentRoll operator installed (helm install agentroll charts/agentroll)
+#   - Argo Rollouts installed
+#   - k8s-health-agent image built and pushed (see examples/k8s-health-agent/README.md)
+#   - ANTHROPIC_API_KEY secret exists:
+#       kubectl create secret generic llm-credentials \
+#         --from-literal=anthropic-api-key=<your-key>
+
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: k8s-health-agent
+  namespace: default
+  labels:
+    app: k8s-health-agent
+    agentroll.dev/scenario: bad-canary-demo
+spec:
+  replicas: 2
+  serviceAccountName: k8s-health-agent
+
+  container:
+    image: k8s-health-agent:v1
+    ports:
+      - containerPort: 8080
+        name: http
+    env:
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: llm-credentials
+            key: anthropic-api-key
+      # degraded-v2 triggers the DEGRADED_SYSTEM_PROMPT in agent.py:
+      # - tells Claude not to use any tools
+      # - instructs it to respond in under 30 words
+      # This produces responses that fail response_length AND tool_usage checks.
+      - name: PROMPT_VERSION
+        value: "degraded-v2"
+      - name: LLM_MODEL
+        value: "claude-haiku-4-5-20251001"
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+  agentMeta:
+    promptVersion: "degraded-v2"
+    modelProvider: "anthropic"
+    modelVersion: "claude-haiku-4-5-20251001"
+    labels:
+      scenario: bad-canary-demo
+
+  rollout:
+    strategy: canary
+    steps:
+      # Step 1: Send 30% traffic to the canary, then immediately run analysis.
+      # The analysis will fail because the degraded agent produces bad responses.
+      - setWeight: 30
+        analysis:
+          templateRef: agent-quality-check
+      # Step 2: Would promote to 100% — but we never get here because Step 1 fails.
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true
+
+  observability:
+    otel:
+      enabled: true
+      endpoint: "http://otel-collector.monitoring:4318"
