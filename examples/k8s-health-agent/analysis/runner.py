@@ -6,11 +6,15 @@ step of a canary deployment. It sends test queries to the agent, validates
 responses, measures latency, and exits with code 0 (pass) or 1 (fail).
 
 Environment variables (passed by AnalysisTemplate args):
-  AGENT_SERVICE_URL  — Full URL to the agent's query endpoint
-  AGENT_HEALTHZ_URL  — Full URL to the agent's health endpoint
-  TEST_QUERIES       — JSON array of test queries (optional)
-  MAX_LATENCY_MS     — Maximum acceptable response latency in ms (default: 10000)
-  MIN_RESPONSE_LEN   — Minimum acceptable response length (default: 50)
+  AGENT_SERVICE_URL        — Full URL to the agent's query endpoint
+  AGENT_HEALTHZ_URL        — Full URL to the agent's health endpoint
+  TEST_QUERIES             — JSON array of test queries (optional)
+  MAX_LATENCY_MS           — Maximum acceptable response latency in ms (default: 10000)
+  MIN_RESPONSE_LEN         — Minimum acceptable response length (default: 50)
+  MIN_TOOL_CALLS           — Minimum tool calls expected per query (default: 1).
+                             Set to 0 to skip the tool usage check.
+  CONTENT_QUALITY_SEVERITY — "fail" (default) or "warn". Controls whether error
+                             indicators in the response cause a hard failure.
 """
 
 import os
@@ -39,13 +43,21 @@ def check_health(healthz_url: str) -> bool:
         return False
 
 
-def check_query(query_url: str, question: str, max_latency_ms: int, min_response_len: int) -> dict:
+def check_query(
+    query_url: str,
+    question: str,
+    max_latency_ms: int,
+    min_response_len: int,
+    min_tool_calls: int,
+    content_quality_severity: str,
+) -> dict:
     """Send a test query and evaluate the response."""
     result = {
         "question": question,
         "passed": False,
         "latency_ms": 0,
         "response_len": 0,
+        "tool_calls_count": None,
         "error": None,
     }
 
@@ -69,6 +81,10 @@ def check_query(query_url: str, question: str, max_latency_ms: int, min_response
         result["response_len"] = len(answer)
         result["prompt_version"] = body.get("prompt_version", "unknown")
         result["model_version"] = body.get("model_version", "unknown")
+
+        # tool_calls_count is optional (agents without the field return -1 sentinel)
+        tool_calls_count = body.get("tool_calls_count", -1)
+        result["tool_calls_count"] = tool_calls_count
 
         # Evaluation criteria
         checks = []
@@ -95,10 +111,23 @@ def check_query(query_url: str, question: str, max_latency_ms: int, min_response
         if not is_error_response:
             checks.append(("content_quality", True))
         else:
-            checks.append(("content_quality", False))
-            # Don't fail on this — agent might legitimately report errors it found
-            log(f"  Warning: Response may contain error indicators (not failing)")
-            checks[-1] = ("content_quality", True)  # Override to pass
+            if content_quality_severity == "warn":
+                log(f"  Warning: Response may contain error indicators (severity=warn, not failing)")
+                checks.append(("content_quality", True))
+            else:
+                checks.append(("content_quality", False))
+                result["error"] = f"Response contains error indicators in first 100 chars"
+
+        # 4. Tool usage — agent should be calling its tools
+        # Skipped if min_tool_calls == 0 or if the agent doesn't report this field (-1 sentinel)
+        if min_tool_calls > 0 and tool_calls_count != -1:
+            if tool_calls_count >= min_tool_calls:
+                checks.append(("tool_usage", True))
+            else:
+                checks.append(("tool_usage", False))
+                result["error"] = (
+                    f"Agent made {tool_calls_count} tool calls, expected >= {min_tool_calls}"
+                )
 
         result["checks"] = {name: passed for name, passed in checks}
         result["passed"] = all(passed for _, passed in checks)
@@ -120,6 +149,8 @@ def main():
     query_url = f"{agent_service_url}/query"
     max_latency_ms = int(os.getenv("MAX_LATENCY_MS", "10000"))
     min_response_len = int(os.getenv("MIN_RESPONSE_LEN", "50"))
+    min_tool_calls = int(os.getenv("MIN_TOOL_CALLS", "1"))
+    content_quality_severity = os.getenv("CONTENT_QUALITY_SEVERITY", "fail")
 
     # Default test queries if none specified
     default_queries = [
@@ -136,6 +167,8 @@ def main():
     log(f"  Service URL: {agent_service_url}")
     log(f"  Max latency: {max_latency_ms}ms")
     log(f"  Min response length: {min_response_len}")
+    log(f"  Min tool calls: {min_tool_calls}")
+    log(f"  Content quality severity: {content_quality_severity}")
     log(f"  Test queries: {len(test_queries)}")
 
     all_passed = True
@@ -153,7 +186,10 @@ def main():
     results = []
     for i, question in enumerate(test_queries):
         log(f"Query {i+1}/{len(test_queries)}: {question[:60]}...")
-        result = check_query(query_url, question, max_latency_ms, min_response_len)
+        result = check_query(
+            query_url, question, max_latency_ms, min_response_len,
+            min_tool_calls, content_quality_severity,
+        )
 
         status = "PASS" if result["passed"] else "FAIL"
         log(f"  {status} — latency={result['latency_ms']}ms, len={result['response_len']}")
