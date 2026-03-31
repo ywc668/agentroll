@@ -1,66 +1,71 @@
 # AgentRoll Pre-built AnalysisTemplate: Agent Quality Check
 #
-# This template queries Langfuse trace data to evaluate agent quality
-# during canary deployments. It checks:
-#   1. Tool call success rate (must be >= 90%)
-#   2. Average response latency (must be <= 5s)
-#   3. Average tokens per task (must not exceed 2x baseline)
+# MANAGED BY AGENTROLL CONTROLLER — this file is reference documentation.
+# The controller auto-generates and owns this template at runtime (see
+# reconcileAnalysisTemplate() in internal/controller/agentdeployment_controller.go).
+# Do not apply this file manually alongside the operator — the controller will
+# overwrite it. It is provided here so you can understand what the controller creates.
 #
-# Usage: Referenced in AgentDeployment rollout steps via templateRef: agent-quality-check
+# What this template checks (via analysis/runner.py Job):
+#   1. Agent health endpoint returns {"status": "ok"}
+#   2. Test queries return responses >= 50 chars (configurable: MIN_RESPONSE_LEN)
+#   3. Response latency <= 10s (configurable: MAX_LATENCY_MS)
+#   4. Responses do not contain error indicators in the first 100 chars
+#   5. Agent made at least 1 tool call per query (configurable: MIN_TOOL_CALLS)
 #
-# Prerequisites:
-#   - Langfuse instance accessible from the cluster
-#   - Agent instrumented with Langfuse SDK (traces tagged with deployment version)
-#   - Prometheus scraping Langfuse metrics endpoint (or use Langfuse API directly)
+# Usage:
+#   In your AgentDeployment, reference this template in a rollout step:
+#     rollout:
+#       steps:
+#         - setWeight: 20
+#           analysis:
+#             templateRef: agent-quality-check
+#
+# For Langfuse-based quality checks (tool success rate from real traces), see
+# agent-langfuse-check.yaml which you apply separately as a user-managed template.
+#
+# Args injected by the controller at runtime (via translateSteps()):
+#   service-name  — K8s Service name for the canary
+#   service-port  — Port to reach the agent's /query endpoint (default: 8080)
+#   namespace     — Namespace where the agent is deployed
 
 apiVersion: argoproj.io/v1alpha1
 kind: AnalysisTemplate
 metadata:
   name: agent-quality-check
   labels:
-    app.kubernetes.io/part-of: agentroll
+    app.kubernetes.io/managed-by: agentroll
     agentroll.dev/template-type: quality
 spec:
   args:
-    - name: agent-name
-    - name: canary-version
-    - name: langfuse-endpoint
-      value: "http://langfuse.monitoring:3000"
-    - name: langfuse-project-id
+    - name: service-name
+    - name: service-port
+      value: "8080"
+    - name: namespace
 
   metrics:
-    # Metric 1: Tool call success rate
-    # Agents that can't successfully call their tools are broken.
-    - name: tool-call-success-rate
-      interval: 2m
-      count: 3                    # Check 3 times
-      successCondition: "result[0] >= 0.90"  # Must be >= 90%
-      failureLimit: 1             # Fail after 1 bad reading
+    # Primary gate: runs runner.py as a Job.
+    # Checks health, query quality, response length, latency, and tool usage.
+    # Exit code 0 = pass, non-zero = fail (Argo Rollouts Job metric convention).
+    - name: agent-health
       provider:
-        web:
-          url: "{{args.langfuse-endpoint}}/api/public/metrics/tool-success-rate?project={{args.langfuse-project-id}}&version={{args.canary-version}}&window=5m"
-          jsonPath: "{$.successRate}"
-
-    # Metric 2: Average response latency
-    # Agent responses should complete within acceptable time.
-    - name: avg-response-latency
-      interval: 2m
-      count: 3
-      successCondition: "result[0] <= 5000"  # Must be <= 5000ms
-      failureLimit: 1
-      provider:
-        web:
-          url: "{{args.langfuse-endpoint}}/api/public/metrics/latency?project={{args.langfuse-project-id}}&version={{args.canary-version}}&window=5m"
-          jsonPath: "{$.avgLatencyMs}"
-
-    # Metric 3: Token consumption (cost proxy)
-    # Canary should not consume dramatically more tokens than stable.
-    - name: tokens-per-task
-      interval: 2m
-      count: 3
-      successCondition: "result[0] <= 2.0"   # Must not exceed 2x baseline
-      failureLimit: 1
-      provider:
-        web:
-          url: "{{args.langfuse-endpoint}}/api/public/metrics/tokens-per-task-ratio?project={{args.langfuse-project-id}}&version={{args.canary-version}}&window=5m"
-          jsonPath: "{$.ratioToBaseline}"
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: analysis
+                    image: ghcr.io/agentroll/analysis-runner:v1
+                    env:
+                      - name: AGENT_SERVICE_URL
+                        value: "http://{{args.service-name}}.{{args.namespace}}.svc:{{args.service-port}}"
+                      - name: MAX_LATENCY_MS
+                        value: "10000"
+                      - name: MIN_RESPONSE_LEN
+                        value: "50"
+                      - name: MIN_TOOL_CALLS
+                        value: "1"
+                      - name: CONTENT_QUALITY_SEVERITY
+                        value: "fail"

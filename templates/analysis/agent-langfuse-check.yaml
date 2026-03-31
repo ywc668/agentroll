@@ -1,0 +1,96 @@
+# AgentRoll User-Managed AnalysisTemplate: Langfuse Quality Check
+#
+# USER-MANAGED — apply this yourself. The AgentRoll controller does NOT touch
+# templates it does not own (any template without the agentroll.dev/managed-by label
+# or whose name is not in the controller's managedTemplates list).
+#
+# What this template checks (via langfuse_metrics.py Job):
+#   1. Tool call success rate for the canary version in Langfuse (default: >= 90%)
+#
+# Prerequisites:
+#   1. Apply this template to your namespace:
+#        kubectl apply -f agent-langfuse-check.yaml
+#   2. Your agent must be instrumented with the Langfuse SDK, tagging traces with
+#      "canary:<composite-version>" (see examples/k8s-health-agent/agent.py for reference).
+#   3. Create a secret with your Langfuse credentials:
+#        kubectl create secret generic langfuse-credentials \
+#          --from-literal=public-key=pk-lf-... \
+#          --from-literal=secret-key=sk-lf-...
+#   4. Reference this template in your AgentDeployment rollout step:
+#        rollout:
+#          steps:
+#            - setWeight: 20
+#              analysis:
+#                templateRef: agent-langfuse-check
+#                args:
+#                  - name: canary-version
+#                    value: "v2.claude-sonnet-4.1.2.3"
+#
+# Tuning:
+#   - MIN_SUCCESS_RATE: lower to 0.80 during initial rollout, tighten later
+#   - TIME_WINDOW_MINUTES: increase for low-traffic agents to collect more traces
+#   - MIN_TRACES: lower if your canary gets < 5 queries during the analysis window
+
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: agent-langfuse-check
+  labels:
+    app.kubernetes.io/part-of: agentroll
+    agentroll.dev/template-type: quality
+spec:
+  args:
+    - name: canary-version
+    - name: langfuse-host
+      value: "https://cloud.langfuse.com"
+    - name: langfuse-secret-name
+      value: "langfuse-credentials"
+    - name: min-success-rate
+      value: "0.90"
+    - name: time-window-minutes
+      value: "10"
+    - name: min-traces
+      value: "5"
+
+  metrics:
+    # Langfuse tool success rate gate.
+    # Runs langfuse_metrics.py as a Job every 2 minutes, up to 3 times.
+    # If fewer than min-traces exist (e.g., during initial canary warmup), the
+    # check passes with an "inconclusive" marker rather than failing falsely.
+    - name: tool-call-success-rate
+      interval: 2m
+      count: 3
+      failureLimit: 1
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: langfuse-checker
+                    image: ghcr.io/agentroll/langfuse-metrics:v1
+                    env:
+                      - name: LANGFUSE_HOST
+                        value: "{{args.langfuse-host}}"
+                      - name: LANGFUSE_PUBLIC_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: "{{args.langfuse-secret-name}}"
+                            key: public-key
+                      - name: LANGFUSE_SECRET_KEY
+                        valueFrom:
+                          secretKeyRef:
+                            name: "{{args.langfuse-secret-name}}"
+                            key: secret-key
+                      - name: CANARY_VERSION
+                        value: "{{args.canary-version}}"
+                      - name: METRIC
+                        value: "tool_success_rate"
+                      - name: MIN_SUCCESS_RATE
+                        value: "{{args.min-success-rate}}"
+                      - name: TIME_WINDOW_MINUTES
+                        value: "{{args.time-window-minutes}}"
+                      - name: MIN_TRACES
+                        value: "{{args.min-traces}}"

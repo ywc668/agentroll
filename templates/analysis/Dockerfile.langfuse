@@ -1,0 +1,5 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY langfuse_metrics.py .
+# stdlib only — no pip install needed
+ENTRYPOINT ["python", "langfuse_metrics.py"]
