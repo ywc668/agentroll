@@ -74,11 +74,12 @@ AgentRoll brings **evaluation-gated progressive delivery** to AI agent deploymen
 | **AgentDeployment CRD** | Declare your agent's complete deployable config as a Kubernetes custom resource | ✅ Done |
 | **Composite Version Tracking** | Track prompt + model + image tag as a single versioned entity via Pod labels | ✅ Done |
 | **Argo Rollouts Integration** | Automatic translation of AgentDeployment to Argo Rollout with canary steps | ✅ Done |
-| **Evaluation-Gated Canary** | Progressive rollout with agent-quality gates (hallucination rate, tool success rate, cost-per-task) | ⚠️ Scaffolded |
+| **Evaluation-Gated Canary** | Quality gates block bad canaries — response length, latency, tool usage, content quality | ✅ Done |
 | **3-Layer AnalysisTemplate** | Pre-built defaults, user override, or fully custom — opinionated defaults with full escape hatches | ✅ Done |
 | **Auto Service Creation** | Automatic Kubernetes Service creation when agent exposes ports | ✅ Done |
-| **Langfuse Integration** | Agent trace data as canary analysis source | 📋 Planned |
-| **OTel Observability** | Auto-injected OpenTelemetry sidecar for agent tracing | 📋 Planned |
+| **Bad Canary Demo** | End-to-end demo: degraded agent detected and rolled back automatically | ✅ Done |
+| **Langfuse Integration** | Agent trace data as canary analysis source (tool success rate gate) | 🔨 In Progress |
+| **OTel Observability** | Auto-injected OpenTelemetry sidecar for agent tracing | ⚠️ Sidecar ready, dashboard pending |
 | **Grafana Dashboards** | Pre-built dashboards for agent-specific metrics | 📋 Planned |
 | **Cost-Aware Scaling** | KEDA-based autoscaling with queue-depth metrics and token budgets | 🗓️ Future |
 | **MCP Tool Lifecycle** | Manage MCP tool server versions alongside agents | 🗓️ Future |
@@ -194,6 +195,43 @@ kubectl get pods --show-labels
 kubectl get services
 ```
 
+## Try the Bad Canary Demo
+
+The fastest way to see AgentRoll's quality gates in action. No external services needed.
+
+```bash
+# 1. Start a Kind cluster with Argo Rollouts + AgentRoll operator
+kind create cluster --name agentroll-demo
+kubectl create namespace argo-rollouts
+kubectl apply -n argo-rollouts \
+  -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+make install && make deploy IMG=controller:latest
+
+# 2. Build the example agent (includes a "degraded" prompt variant)
+cd examples/k8s-health-agent
+docker build -t k8s-health-agent:v1 .
+docker build -t agentroll-analysis:v1 analysis/
+kind load docker-image k8s-health-agent:v1 agentroll-analysis:v1 --name agentroll-demo
+
+# 3. Deploy prerequisites
+kubectl apply -f k8s/rbac.yaml
+kubectl create secret generic llm-credentials \
+  --from-literal=anthropic-api-key=<YOUR_KEY>
+
+# 4. Deploy stable version, then trigger a bad canary
+kubectl apply -f k8s/agent-deployment.yaml   # stable: v4 prompt, uses tools
+kubectl apply -f k8s/bad-canary-demo.yaml    # canary: degraded-v2, no tools
+
+# 5. Watch the quality gate catch it
+kubectl argo rollouts get rollout k8s-health-agent --watch
+```
+
+**What you'll see**: The canary (`degraded-v2`) produces responses with 0 tool calls.
+The analysis runner detects this, marks the AnalysisRun as Failed, and Argo Rollouts
+automatically rolls back to the stable version. The stable pods never go down.
+
+See [`examples/k8s-health-agent/`](examples/k8s-health-agent/) for full details.
+
 ## AgentDeployment CRD
 
 ```yaml
@@ -272,12 +310,14 @@ AgentRoll uses a principled approach to evaluation templates:
 ## Roadmap
 
 - **Phase 0** ✅ — Project setup, CRD design, community foundation
-- **Phase 1 Sprint 1** ✅ — Core controller: AgentDeployment → Deployment + Service
+- **Phase 1 Sprint 1** ✅ — Core controller: AgentDeployment → Rollout + Service
 - **Phase 1 Sprint 2** ✅ — Argo Rollouts integration with canary strategy + 3-layer AnalysisTemplate
-- **Phase 1 Sprint 2.5** 🔨 — Dogfooding: build and deploy a real agent with AgentRoll
-- **Phase 1 Sprint 3** 📋 — Observability: OTel sidecar, Grafana dashboards, real analysis metrics
-- **Phase 2** 📋 — Production hardening: Helm chart, Terraform modules, multi-framework validation
-- **Phase 3** 🗓️ — Ecosystem: MCP tool lifecycle, A2A coordination, KEDA scaling
+- **Phase 1 Sprint 2.5** ✅ — Dogfooding: `k8s-health-agent` with OTel sidecar + real analysis runner
+- **Phase 1 Sprint 3** 🔨 — Quality gates validated end-to-end; Langfuse integration in progress
+- **Phase 2** 📋 — Production hardening: Grafana dashboards, KEDA scaling, Terraform modules
+- **Phase 3** 🗓️ — Ecosystem: MCP tool lifecycle, A2A coordination
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the detailed sprint plan.
 
 ## Contributing
 

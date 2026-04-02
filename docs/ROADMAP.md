@@ -7,28 +7,23 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 
 ## Sprint 3 — Observability & Credible Quality Gates
 
-### P0 (must ship)
+### In Progress
 
-- **Bad canary demo**: prove quality gates actually block a degraded agent. Adds a
-  `degraded-v2` prompt variant to `k8s-health-agent` and fixes the `runner.py`
-  content_quality override bug. Demonstrates the full reject-and-rollback flow.
-- **Langfuse metric provider (minimum viable)**: replace the placeholder
-  `agent-quality-check.yaml` with a real `agent-langfuse-check.yaml` that queries
-  Langfuse traces and computes tool success rate as a gate signal.
+- **Langfuse end-to-end**: deploy Langfuse, verify agent trace instrumentation, run
+  `langfuse_metrics.py` against real trace data, gate a canary deployment on
+  `tool_success_rate >= 90%` using `agent-langfuse-check.yaml`
 
-### P1
+### P1 (next)
 
-- Langfuse SDK instrumentation in `k8s-health-agent` (tag traces with composite version)
-- Grafana dashboard panels wired to OTel metrics from the sidecar
-- `runner.py` content quality improvements — configurable severity
-- Documentation: end-to-end bad-canary-demo walkthrough
+- Grafana dashboard panels wired to OTel sidecar metrics
+- Additional Langfuse metrics: avg latency, token consumption ratio vs stable
+- Documentation: Langfuse setup guide for self-hosted and cloud.langfuse.com
 
 ### P2
 
-- Additional Langfuse metrics: avg latency, token consumption ratio vs stable
 - E2E test that asserts canary rejection flow (Kind cluster + real AnalysisRun)
 - `onCostSpike` enforcement in the controller
-- Finalizer for orphaned Argo Rollout cleanup
+- Finalizer for orphaned Argo Rollout cleanup on AgentDeployment delete
 
 ---
 
@@ -57,3 +52,9 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 | 1 | CRD (AgentDeployment), controller, Argo Rollout + Service reconciliation |
 | 2 | Canary step translation, AnalysisTemplate 3-layer design, status sync |
 | 2.5 | `k8s-health-agent` dogfooding, OTel sidecar injection, real analysis runner |
+| 3 P0 | Quality gates validated end-to-end on Kind: bad canary detected and rolled back |
+| 3 P0 | `runner.py` content_quality bug fixed, `tool_usage` check added |
+| 3 P0 | `langfuse_metrics.py` Job script + `agent-langfuse-check.yaml` template written |
+| 3 P0 | `StableVersion` now reads from stable ReplicaSet labels (not current spec) |
+| 3 P0 | Controller RBAC: added `apps/replicasets` get;list;watch permission |
+| 3 P0 | Controller test coverage: 46% → 63% |
