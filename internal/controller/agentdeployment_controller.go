@@ -56,6 +56,7 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=argoproj.io,resources=analysistemplates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -625,8 +626,9 @@ func (r *AgentDeploymentReconciler) stableRSCompositeVersion(
 	stableHash string,
 ) string {
 	rsList := &appsv1.ReplicaSetList{}
+	// Argo Rollouts uses "rollouts-pod-template-hash" (not the standard "pod-template-hash")
 	selector := labels.SelectorFromSet(labels.Set{
-		"pod-template-hash": stableHash,
+		"rollouts-pod-template-hash": stableHash,
 	})
 	if err := r.List(ctx, rsList,
 		client.InNamespace(namespace),

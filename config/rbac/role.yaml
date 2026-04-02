@@ -44,6 +44,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - argoproj.io
   resources:
   - analysistemplates
