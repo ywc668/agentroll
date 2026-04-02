@@ -89,5 +89,4 @@ spec:
 
   observability:
     opentelemetry:
-      enabled: true
-      endpoint: "http://otel-collector.monitoring:4318"
+      enabled: false
