@@ -20,11 +20,13 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -570,8 +572,29 @@ func (r *AgentDeploymentReconciler) updateStatus(
 		// Map Argo Rollout phase to AgentDeployment phase
 		agentDeploy.Status.Phase = mapRolloutPhase(rollout)
 
-		// Always set composite version as stable version
-		agentDeploy.Status.StableVersion = compositeVersion
+		// StableVersion tracks the version that is actually serving stable traffic.
+		// We must NOT blindly use compositeVersion (from the current spec) because the
+		// spec may have been updated to a canary that was subsequently rejected.
+		//
+		// Rule: if Argo's stable RS matches the current pod hash (fully promoted),
+		// the current spec IS the stable version. Otherwise, read it from the
+		// stable ReplicaSet's composite-version label set by our controller.
+		if rollout.Status.CurrentPodHash != "" &&
+			rollout.Status.CurrentPodHash == rollout.Status.StableRS {
+			// Canary was fully promoted — current spec is now stable
+			agentDeploy.Status.StableVersion = compositeVersion
+		} else if rollout.Status.StableRS != "" {
+			// Stable RS differs from current (canary in-flight or aborted)
+			// Read the composite version label that our controller stamped on the stable RS
+			stableVersion := r.stableRSCompositeVersion(ctx, agentDeploy.Namespace, agentDeploy.Name, rollout.Status.StableRS)
+			if stableVersion != "" {
+				agentDeploy.Status.StableVersion = stableVersion
+			}
+			// If we couldn't read the RS label, keep whatever was already in status
+		} else {
+			// No stable RS yet (first deploy) — use current spec
+			agentDeploy.Status.StableVersion = compositeVersion
+		}
 
 		// Extract canary weight from traffic weights (if available)
 		if rollout.Status.Canary.Weights != nil {
@@ -590,6 +613,36 @@ func (r *AgentDeploymentReconciler) updateStatus(
 	agentDeploy.Status.ObservedGeneration = agentDeploy.Generation
 
 	return r.Status().Update(ctx, agentDeploy)
+}
+
+// stableRSCompositeVersion finds the stable ReplicaSet (matched by pod-template-hash)
+// owned by the given Rollout and returns the agentroll.dev/composite-version label value.
+// Returns "" if the RS cannot be found or the label is absent.
+func (r *AgentDeploymentReconciler) stableRSCompositeVersion(
+	ctx context.Context,
+	namespace string,
+	rolloutName string,
+	stableHash string,
+) string {
+	rsList := &appsv1.ReplicaSetList{}
+	selector := labels.SelectorFromSet(labels.Set{
+		"pod-template-hash": stableHash,
+	})
+	if err := r.List(ctx, rsList,
+		client.InNamespace(namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return ""
+	}
+	for _, rs := range rsList.Items {
+		// Confirm the RS is owned by our Rollout to avoid cross-contamination
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Rollout" && ref.Name == rolloutName {
+				return rs.Spec.Template.Labels["agentroll.dev/composite-version"]
+			}
+		}
+	}
+	return ""
 }
 
 // mapRolloutPhase translates Argo Rollout's phase string to AgentDeployment phase.
