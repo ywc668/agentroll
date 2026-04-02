@@ -88,6 +88,6 @@ spec:
     onFailedAnalysis: true
 
   observability:
-    otel:
+    opentelemetry:
       enabled: true
       endpoint: "http://otel-collector.monitoring:4318"
