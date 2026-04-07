@@ -7,12 +7,6 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 
 ## Sprint 3 — Observability & Credible Quality Gates
 
-### In Progress
-
-- **Langfuse end-to-end**: deploy Langfuse, verify agent trace instrumentation, run
-  `langfuse_metrics.py` against real trace data, gate a canary deployment on
-  `tool_success_rate >= 90%` using `agent-langfuse-check.yaml`
-
 ### P1 (next)
 
 - Grafana dashboard panels wired to OTel sidecar metrics
@@ -58,3 +52,6 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 | 3 P0 | `StableVersion` now reads from stable ReplicaSet labels (not current spec) |
 | 3 P0 | Controller RBAC: added `apps/replicasets` get;list;watch permission |
 | 3 P0 | Controller test coverage: 46% → 63% |
+| 3 P1 | Langfuse e2e: agent traces tagged with `canary:{version}`, `langfuse_metrics.py` queries real data, `agent-langfuse-check` AnalysisTemplate gates canary on `tool_success_rate >= 90%` |
+| 3 P1 | Controller injects `canary-version` arg into every analysis step for Langfuse filtering |
+| 3 P1 | `docs/langfuse/docker-compose.yml` — headless Langfuse v2 local setup for Kind |
