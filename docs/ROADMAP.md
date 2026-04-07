@@ -11,11 +11,9 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 
 - Grafana dashboard panels wired to OTel sidecar metrics
 - Additional Langfuse metrics: avg latency, token consumption ratio vs stable
-- Documentation: Langfuse setup guide for self-hosted and cloud.langfuse.com
 
 ### P2
 
-- E2E test that asserts canary rejection flow (Kind cluster + real AnalysisRun)
 - `onCostSpike` enforcement in the controller
 - Finalizer for orphaned Argo Rollout cleanup on AgentDeployment delete
 
@@ -55,3 +53,6 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 | 3 P1 | Langfuse e2e: agent traces tagged with `canary:{version}`, `langfuse_metrics.py` queries real data, `agent-langfuse-check` AnalysisTemplate gates canary on `tool_success_rate >= 90%` |
 | 3 P1 | Controller injects `canary-version` arg into every analysis step for Langfuse filtering |
 | 3 P1 | `docs/langfuse/docker-compose.yml` — headless Langfuse v2 local setup for Kind |
+| 3 P1 | `docs/langfuse/SETUP.md` — Langfuse setup guide for self-hosted and cloud.langfuse.com |
+| 3 P2 | E2E test: bad canary rejection flow (`test/e2e/e2e_test.go` — always-fail AnalysisTemplate + rollback assertion) |
+| 3 P2 | Makefile `setup-test-e2e` installs Argo Rollouts into the test Kind cluster |

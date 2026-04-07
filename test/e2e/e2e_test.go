@@ -282,6 +282,212 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 })
 
+// ────────────────────────────────────────────────────────────────────────────
+// Bad canary rejection flow
+//
+// This test validates the full rollback pipeline:
+//   AgentDeployment (canary update) → controller creates Rollout + AnalysisRun
+//   → AnalysisRun fails → Argo Rollouts rolls back → AgentDeployment reflects failure
+//
+// The test uses a deliberately-failing AnalysisTemplate ("always-fail-check")
+// that runs `busybox exit 1` as the Job. This keeps the test deterministic and
+// free of LLM dependencies. The real LLM-based quality gate detection is
+// demonstrated by the bad-canary-demo scenario in examples/k8s-health-agent/.
+// ────────────────────────────────────────────────────────────────────────────
+var _ = Describe("Bad canary rejection flow", Ordered, func() {
+	const (
+		agentName     = "e2e-canary-agent"
+		testNamespace = "default"
+		// alwaysFailTemplate is an AnalysisTemplate that unconditionally fails its
+		// single measurement, causing an AnalysisRun to be marked Failed immediately.
+		alwaysFailTemplate = `
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: always-fail-check
+  namespace: default
+spec:
+  metrics:
+    - name: always-fail
+      count: 1
+      failureLimit: 0
+      provider:
+        job:
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                restartPolicy: Never
+                containers:
+                  - name: fail
+                    image: busybox:1.36.1
+                    command: ["sh", "-c", "exit 1"]
+`
+		// stableAgentDeployment is the initial (v1) deployment — no analysis, goes Stable directly.
+		stableAgentDeployment = `
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: e2e-canary-agent
+  namespace: default
+spec:
+  replicas: 1
+  container:
+    image: busybox:1.36.1
+    command: ["sleep", "3600"]
+  agentMeta:
+    promptVersion: "v1"
+    modelVersion: "test-model"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 100
+`
+		// canaryAgentDeployment triggers a canary with the always-fail analysis step.
+		canaryAgentDeployment = `
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: e2e-canary-agent
+  namespace: default
+spec:
+  replicas: 1
+  container:
+    image: busybox:1.36.1
+    command: ["sleep", "3600"]
+  agentMeta:
+    promptVersion: "v2"
+    modelVersion: "test-model"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 30
+        analysis:
+          templateRef: always-fail-check
+      - setWeight: 100
+  rollback:
+    onFailedAnalysis: true
+`
+	)
+
+	// applyYAML writes yaml to a temp file and runs kubectl apply.
+	applyYAML := func(yaml string) error {
+		f, err := os.CreateTemp("", "agentroll-e2e-*.yaml")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(f.Name())
+		if _, err := f.WriteString(yaml); err != nil {
+			return err
+		}
+		f.Close()
+		cmd := exec.Command("kubectl", "apply", "-f", f.Name())
+		_, err = utils.Run(cmd)
+		return err
+	}
+
+	BeforeAll(func() {
+		By("applying the always-fail AnalysisTemplate")
+		Expect(applyYAML(alwaysFailTemplate)).To(Succeed())
+
+		By("deploying the stable v1 AgentDeployment (no analysis, goes Stable directly)")
+		Expect(applyYAML(stableAgentDeployment)).To(Succeed())
+
+		By("triggering initial reconciliation")
+		cmd := exec.Command("kubectl", "annotate", "agentdeployment", agentName,
+			"-n", testNamespace,
+			"--overwrite", "agentroll.dev/reconcile=init")
+		_, _ = utils.Run(cmd)
+
+		By("waiting for the Rollout to reach Stable phase")
+		waitForRolloutPhase := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "rollout", agentName,
+				"-n", testNamespace,
+				"-o", "jsonpath={.status.phase}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Healthy"), "Rollout has not reached Healthy/Stable phase yet")
+		}
+		Eventually(waitForRolloutPhase, 3*time.Minute, 5*time.Second).Should(Succeed())
+	})
+
+	AfterAll(func() {
+		By("deleting the AgentDeployment")
+		cmd := exec.Command("kubectl", "delete", "agentdeployment", agentName,
+			"-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("deleting generated Rollout")
+		cmd = exec.Command("kubectl", "delete", "rollout", agentName,
+			"-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
+		By("deleting always-fail AnalysisTemplate")
+		cmd = exec.Command("kubectl", "delete", "analysistemplate", "always-fail-check",
+			"-n", testNamespace, "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+	})
+
+	SetDefaultEventuallyTimeout(5 * time.Minute)
+	SetDefaultEventuallyPollingInterval(5 * time.Second)
+
+	It("should detect the bad canary and roll back automatically", func() {
+		By("triggering a canary deployment with the always-fail analysis step")
+		Expect(applyYAML(canaryAgentDeployment)).To(Succeed())
+
+		By("waiting for an AnalysisRun to be created for revision 2")
+		var analysisRunName string
+		waitForAnalysisRun := func(g Gomega) {
+			// Argo Rollouts labels AnalysisRuns with the rollout name
+			cmd := exec.Command("kubectl", "get", "analysisruns",
+				"-n", testNamespace,
+				"-l", fmt.Sprintf("rollouts.argoproj.io/rollout=%s", agentName),
+				"-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`)
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			lines := utils.GetNonEmptyLines(out)
+			g.Expect(lines).NotTo(BeEmpty(), "No AnalysisRun found for rollout %s yet", agentName)
+			analysisRunName = lines[0]
+		}
+		Eventually(waitForAnalysisRun).Should(Succeed())
+		_, _ = fmt.Fprintf(GinkgoWriter, "AnalysisRun: %s\n", analysisRunName)
+
+		By("waiting for the AnalysisRun to fail")
+		waitForAnalysisRunFailed := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "analysisrun", analysisRunName,
+				"-n", testNamespace,
+				"-o", "jsonpath={.status.phase}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("Failed"), "AnalysisRun %s has not failed yet (phase=%s)", analysisRunName, out)
+		}
+		Eventually(waitForAnalysisRunFailed, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("asserting the Rollout is Degraded (rolled back) after analysis failure")
+		waitForRolloutDegraded := func(g Gomega) {
+			cmd := exec.Command("kubectl", "get", "rollout", agentName,
+				"-n", testNamespace,
+				"-o", "jsonpath={.status.phase}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			// Argo Rollouts phase after a failed analysis during canary is "Degraded"
+			g.Expect(out).To(Equal("Degraded"),
+				"Rollout should be Degraded after AnalysisRun failure (got %s)", out)
+		}
+		Eventually(waitForRolloutDegraded, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("asserting AgentDeployment status reflects the rollback")
+		cmd := exec.Command("kubectl", "get", "agentdeployment", agentName,
+			"-n", testNamespace,
+			"-o", "jsonpath={.status.phase}")
+		phaseOut, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		// Controller maps Degraded → "RollingBack" or "Degraded" depending on phase
+		Expect(phaseOut).NotTo(Equal("Stable"),
+			"AgentDeployment should not report Stable after a failed canary")
+	})
+})
+
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
 // and parsing the resulting token from the API response.

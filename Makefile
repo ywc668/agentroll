@@ -67,8 +67,11 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 KIND_CLUSTER ?= agentroll-test-e2e
 
+# Argo Rollouts version for e2e cluster setup.
+ARGO_ROLLOUTS_VERSION ?= v1.9.0
+
 .PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
+setup-test-e2e: ## Set up a Kind cluster for e2e tests, including Argo Rollouts
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
@@ -80,6 +83,13 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
+	@echo "Installing Argo Rollouts $(ARGO_ROLLOUTS_VERSION) into Kind cluster..."
+	@kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
+	@kubectl apply -n argo-rollouts \
+		-f https://github.com/argoproj/argo-rollouts/releases/download/$(ARGO_ROLLOUTS_VERSION)/install.yaml
+	@echo "Waiting for Argo Rollouts controller to be ready..."
+	@kubectl wait deployment/argo-rollouts -n argo-rollouts \
+		--for=condition=Available --timeout=3m
 
 .PHONY: test-e2e
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
