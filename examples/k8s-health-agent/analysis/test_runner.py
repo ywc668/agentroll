@@ -197,7 +197,7 @@ class TestCheckQuery(unittest.TestCase):
             "prompt_version": "v1",
             "model_version": "claude-sonnet",
             "tool_calls_count": 1,
-        }, max_latency_ms=1)  # 1ms — impossible to beat
+        }, max_latency_ms=0)  # 0ms threshold — always fails since elapsed > 0
         self.assertFalse(result["passed"])
         self.assertEqual(result["checks"]["latency"], False)
 

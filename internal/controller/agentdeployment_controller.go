@@ -343,6 +343,14 @@ func translateSteps(agentDeploy *agentrollv1alpha1.AgentDeployment) []rolloutsv1
 							Name:  "namespace",
 							Value: agentDeploy.Namespace,
 						},
+						{
+							// Injected so Langfuse-based AnalysisTemplates can filter traces
+							// for this specific canary version (e.g. agent-langfuse-check.yaml).
+							// Uses "{promptVersion}.{modelVersion}" (no image tag) to match the
+							// tag format that agent.py writes to Langfuse traces.
+							Name:  "canary-version",
+							Value: fmt.Sprintf("%s.%s", agentDeploy.Spec.AgentMeta.PromptVersion, agentDeploy.Spec.AgentMeta.ModelVersion),
+						},
 					},
 				},
 			})

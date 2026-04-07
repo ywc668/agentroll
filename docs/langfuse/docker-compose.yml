@@ -1,0 +1,57 @@
+# Minimal Langfuse v2 for local development / Kind-based e2e testing.
+# Langfuse v2 only needs PostgreSQL (no ClickHouse/Redis/MinIO).
+#
+# Usage:
+#   cd docs/langfuse && docker compose up -d
+#   # Langfuse UI: http://localhost:3000
+#   # Login: admin@agentroll.dev / agentroll-dev
+#   # Project public key: pk-agentroll-local
+#   # Project secret key: sk-agentroll-local
+#
+# Kind pods can reach this at http://192.168.97.1:3000 (host bridge IP).
+
+services:
+  langfuse-db:
+    image: postgres:15-alpine
+    container_name: langfuse-db
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: langfuse
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # Core
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: agentroll-nextauth-secret-dev
+      SALT: agentroll-salt-dev
+      ENCRYPTION_KEY: 3e4e21627a47f7e6df5750c95a67313cc7cd6a5a8412b2cb734c5560f2aaa3da
+      TELEMETRY_ENABLED: "false"
+      # Headless initialization — creates org, project, and admin user on first boot
+      LANGFUSE_INIT_ORG_ID: org-agentroll
+      LANGFUSE_INIT_ORG_NAME: AgentRoll
+      LANGFUSE_INIT_PROJECT_ID: proj-k8s-health-agent
+      LANGFUSE_INIT_PROJECT_NAME: k8s-health-agent
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-agentroll-local
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-agentroll-local
+      LANGFUSE_INIT_USER_EMAIL: admin@agentroll.dev
+      LANGFUSE_INIT_USER_NAME: AgentRoll Admin
+      LANGFUSE_INIT_USER_PASSWORD: agentroll-dev
+
+volumes:
+  langfuse_db:

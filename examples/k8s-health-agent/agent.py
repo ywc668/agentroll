@@ -24,6 +24,7 @@ from kubernetes import client, config
 import anthropic
 
 # Optional Langfuse instrumentation — only active when LANGFUSE_SECRET_KEY is set.
+# Requires Langfuse Python SDK v2.x (langfuse>=2.0.0,<3.0.0).
 # If the langfuse package is not installed, tracing is silently disabled.
 try:
     from langfuse.decorators import observe, langfuse_context

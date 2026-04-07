@@ -1,0 +1,78 @@
+# Langfuse-gated canary — demonstrates end-to-end quality gate using real Langfuse trace data.
+#
+# This AgentDeployment triggers a canary deployment of "v5" of the agent,
+# gated on tool_success_rate >= 90% as measured by Langfuse traces.
+#
+# Prerequisites:
+#   - Langfuse running locally: cd docs/langfuse && docker compose up -d
+#   - langfuse-credentials secret created in cluster
+#   - agent-langfuse-check AnalysisTemplate applied (see below)
+#   - agent is already sending traces tagged with "canary:<composite-version>"
+#
+# Flow:
+#   1. 30% canary traffic sent to v5 agent
+#   2. Agent sends traces to Langfuse tagged with "canary:v5.claude-haiku-4-5-20251001.v1"
+#   3. langfuse_metrics.py Job runs and checks tool_success_rate >= 90%
+#   4. If passes (>= 3 successful checks): promote to 100%
+#   5. If fails: automatic rollback
+
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: k8s-health-agent
+  namespace: default
+  labels:
+    app: k8s-health-agent
+    purpose: langfuse-e2e-demo
+spec:
+  replicas: 1
+  serviceAccountName: k8s-health-agent
+
+  container:
+    image: k8s-health-agent:v1
+    ports:
+      - containerPort: 8080
+        name: http
+    env:
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: llm-credentials
+            key: anthropic-api-key
+      - name: PROMPT_VERSION
+        value: "v5"
+      - name: LLM_MODEL
+        value: "claude-haiku-4-5-20251001"
+      - name: LANGFUSE_HOST
+        value: "http://192.168.97.1:3000"
+      - name: LANGFUSE_PUBLIC_KEY
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-credentials
+            key: public-key
+      - name: LANGFUSE_SECRET_KEY
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-credentials
+            key: secret-key
+
+  agentMeta:
+    promptVersion: "v5"
+    modelProvider: "anthropic"
+    modelVersion: "claude-haiku-4-5-20251001"
+    labels:
+      domain: devops
+      purpose: langfuse-e2e
+
+  rollout:
+    strategy: canary
+    steps:
+      # Step 1: 30% canary traffic + Langfuse-based quality gate
+      - setWeight: 30
+        analysis:
+          templateRef: agent-langfuse-check
+      # Step 2: Promote to 100% only if Langfuse gate passed
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true

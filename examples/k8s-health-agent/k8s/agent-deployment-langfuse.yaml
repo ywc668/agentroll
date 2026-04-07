@@ -1,0 +1,74 @@
+# Stable k8s-health-agent with Langfuse tracing enabled.
+#
+# Adds LANGFUSE_* env vars so the agent sends traces to a self-hosted Langfuse
+# instance. The Langfuse Docker Compose runs on the host machine at port 3000;
+# Kind pods reach it at the Docker bridge gateway (192.168.97.1).
+#
+# Prerequisites (in addition to agent-deployment.yaml prerequisites):
+#   cd docs/langfuse && docker compose up -d
+#   kubectl apply -f k8s/rbac.yaml
+#   kubectl create secret generic langfuse-credentials \
+#     --from-literal=public-key=pk-agentroll-local \
+#     --from-literal=secret-key=sk-agentroll-local
+
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: k8s-health-agent
+  namespace: default
+  labels:
+    app: k8s-health-agent
+    purpose: dogfooding
+spec:
+  replicas: 1
+  serviceAccountName: k8s-health-agent
+
+  container:
+    image: k8s-health-agent:v1
+    ports:
+      - containerPort: 8080
+        name: http
+    env:
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: llm-credentials
+            key: anthropic-api-key
+      - name: PROMPT_VERSION
+        value: "v4"
+      - name: LLM_MODEL
+        value: "claude-haiku-4-5-20251001"
+      # Langfuse tracing — agent.py uses try/except import, no-op if not set
+      - name: LANGFUSE_HOST
+        value: "http://192.168.97.1:3000"
+      - name: LANGFUSE_PUBLIC_KEY
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-credentials
+            key: public-key
+      - name: LANGFUSE_SECRET_KEY
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-credentials
+            key: secret-key
+
+  agentMeta:
+    promptVersion: "v4"
+    modelProvider: "anthropic"
+    modelVersion: "claude-haiku-4-5-20251001"
+    labels:
+      domain: devops
+      purpose: langfuse-e2e
+
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 50
+        pause:
+          duration: "2m"
+        analysis:
+          templateRef: agent-quality-check
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true
