@@ -187,6 +187,10 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)
 	}
+	if err := agentrollv1alpha1.SetupAgentDeploymentWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to set up webhook", "webhook", "AgentDeployment")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

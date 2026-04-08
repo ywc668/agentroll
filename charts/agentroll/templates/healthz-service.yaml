@@ -1,0 +1,22 @@
+{{- /*
+  ClusterIP Service exposing the operator health probe endpoint.
+  Used by `helm test` (see templates/tests/) to verify the operator is alive.
+  Safe to leave enabled — /healthz and /readyz are unauthenticated Go health checks.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentroll.fullname" . }}-healthz
+  namespace: {{ include "agentroll.namespace" . }}
+  labels:
+    {{- include "agentroll.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+  - name: healthz
+    port: {{ .Values.operator.healthProbe.port }}
+    targetPort: health
+    protocol: TCP
+  selector:
+    control-plane: controller-manager
+    {{- include "agentroll.selectorLabels" . | nindent 4 }}

@@ -54,6 +54,20 @@ argoRollouts:
   # Set to true to skip the prerequisite check (not recommended)
   skipCheck: false
 
+# Validating webhook — rejects invalid AgentDeployment specs at admission time.
+# Requires cert-manager for TLS certificate management when certManager.enabled is true.
+webhook:
+  # Set to true to enable the ValidatingWebhookConfiguration.
+  # Requires cert-manager to be installed when certManager.enabled is true.
+  enabled: false
+  # Policy when the webhook server is unreachable. "Fail" is safer; "Ignore" for dev.
+  failurePolicy: Fail
+  # Provide a base64-encoded CA bundle if not using cert-manager.
+  caBundle: ""
+  certManager:
+    # Set to true to create a cert-manager Issuer + Certificate for the webhook TLS.
+    enabled: true
+
 # Pre-built AnalysisTemplates to install
 analysisTemplates:
   # Install the agent-quality-check template in these namespaces

@@ -1,0 +1,40 @@
+{{- /*
+  Helm test: verifies the operator is alive by hitting /healthz.
+  Run with: helm test <release-name> -n <namespace>
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "agentroll.fullname" . }}-test-health
+  namespace: {{ include "agentroll.namespace" . }}
+  labels:
+    {{- include "agentroll.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed
+spec:
+  restartPolicy: Never
+  containers:
+  - name: health-check
+    image: curlimages/curl:8.5.0
+    command:
+    - /bin/sh
+    - -c
+    - |
+      set -e
+      echo "Checking /healthz ..."
+      curl -sf http://{{ include "agentroll.fullname" . }}-healthz.{{ include "agentroll.namespace" . }}.svc.cluster.local:{{ .Values.operator.healthProbe.port }}/healthz
+      echo ""
+      echo "Checking /readyz ..."
+      curl -sf http://{{ include "agentroll.fullname" . }}-healthz.{{ include "agentroll.namespace" . }}.svc.cluster.local:{{ .Values.operator.healthProbe.port }}/readyz
+      echo ""
+      echo "OK: operator is healthy."
+    securityContext:
+      readOnlyRootFilesystem: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      runAsNonRoot: true
+      runAsUser: 1000
+      seccompProfile:
+        type: RuntimeDefault

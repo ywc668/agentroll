@@ -1,0 +1,26 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-agentroll-dev-v1alpha1-agentdeployment
+  failurePolicy: Fail
+  name: vagentdeployment.kb.io
+  rules:
+  - apiGroups:
+    - agentroll.dev
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agentdeployments
+  sideEffects: None
