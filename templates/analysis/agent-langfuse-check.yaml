@@ -41,23 +41,35 @@ metadata:
 spec:
   args:
     - name: canary-version
+    # Metric to evaluate. Options: tool_success_rate | avg_latency | token_cost_ratio
+    - name: metric
+      value: "tool_success_rate"
     - name: langfuse-host
       value: "https://cloud.langfuse.com"
     - name: langfuse-secret-name
       value: "langfuse-credentials"
+    # tool_success_rate args
     - name: min-success-rate
       value: "0.90"
+    # avg_latency args
+    - name: max-latency-ms
+      value: "5000"
+    # token_cost_ratio args — set stable-version to match agent.py's composite version format
+    - name: stable-version
+      value: ""
+    - name: max-cost-ratio
+      value: "2.0"
+    # Shared
     - name: time-window-minutes
       value: "10"
     - name: min-traces
       value: "5"
 
   metrics:
-    # Langfuse tool success rate gate.
-    # Runs langfuse_metrics.py as a Job every 2 minutes, up to 3 times.
-    # If fewer than min-traces exist (e.g., during initial canary warmup), the
-    # check passes with an "inconclusive" marker rather than failing falsely.
-    - name: tool-call-success-rate
+    # Langfuse quality gate — runs langfuse_metrics.py as a Job every 2 minutes, up to 3 times.
+    # Switch the metric arg to use avg_latency or token_cost_ratio instead of tool_success_rate.
+    # If fewer than min-traces exist (canary warmup), passes as "inconclusive" to avoid false negatives.
+    - name: langfuse-quality-gate
       interval: 2m
       count: 3
       failureLimit: 1
@@ -86,10 +98,16 @@ spec:
                             key: secret-key
                       - name: CANARY_VERSION
                         value: "{{args.canary-version}}"
+                      - name: STABLE_VERSION
+                        value: "{{args.stable-version}}"
                       - name: METRIC
-                        value: "tool_success_rate"
+                        value: "{{args.metric}}"
                       - name: MIN_SUCCESS_RATE
                         value: "{{args.min-success-rate}}"
+                      - name: MAX_LATENCY_MS
+                        value: "{{args.max-latency-ms}}"
+                      - name: MAX_COST_RATIO
+                        value: "{{args.max-cost-ratio}}"
                       - name: TIME_WINDOW_MINUTES
                         value: "{{args.time-window-minutes}}"
                       - name: MIN_TRACES

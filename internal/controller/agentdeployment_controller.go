@@ -19,6 +19,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -42,6 +44,13 @@ import (
 // Default image for the analysis runner.
 // Users can override by creating their own AnalysisTemplate.
 const defaultAnalysisImage = "agentroll-analysis:v1"
+
+// Image for the Langfuse metrics script used by the agent-cost-check managed template.
+const defaultLangfuseMetricsImage = "ghcr.io/agentroll/langfuse-metrics:v1"
+
+// Finalizer added to every AgentDeployment so the controller can clean up
+// orphaned Argo Rollouts before the AgentDeployment object is removed.
+const agentDeploymentFinalizer = "agentroll.dev/finalizer"
 
 // AgentDeploymentReconciler reconciles a AgentDeployment object
 type AgentDeploymentReconciler struct {
@@ -70,6 +79,20 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		log.Error(err, "unable to fetch AgentDeployment")
 		return ctrl.Result{}, err
+	}
+
+	// Handle deletion via finalizer — must check before any other work
+	if !agentDeploy.DeletionTimestamp.IsZero() {
+		return r.handleDeletion(ctx, agentDeploy)
+	}
+
+	// Ensure our finalizer is registered (add on first reconcile, then continue)
+	if !controllerutil.ContainsFinalizer(agentDeploy, agentDeploymentFinalizer) {
+		controllerutil.AddFinalizer(agentDeploy, agentDeploymentFinalizer)
+		if err := r.Update(ctx, agentDeploy); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
+		}
+		// Don't return — continue reconciling so resources are created on the first call
 	}
 
 	log.Info("Reconciling AgentDeployment",
@@ -112,6 +135,45 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	log.Info("Successfully reconciled AgentDeployment", "name", agentDeploy.Name)
+	return ctrl.Result{}, nil
+}
+
+// handleDeletion cleans up owned resources and removes the finalizer so the
+// AgentDeployment can be fully deleted.  We explicitly delete the Argo Rollout
+// here (even though it has an owner reference) to guarantee the Rollout and its
+// analysis history are flushed before the AgentDeployment disappears.
+func (r *AgentDeploymentReconciler) handleDeletion(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	if !controllerutil.ContainsFinalizer(agentDeploy, agentDeploymentFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// Delete the owned Argo Rollout (and cascade to its ReplicaSets / AnalysisRuns)
+	rollout := &rolloutsv1alpha1.Rollout{}
+	err := r.Get(ctx, client.ObjectKey{
+		Name:      agentDeploy.Name,
+		Namespace: agentDeploy.Namespace,
+	}, rollout)
+	if err == nil {
+		if delErr := r.Delete(ctx, rollout); delErr != nil && !errors.IsNotFound(delErr) {
+			return ctrl.Result{}, fmt.Errorf("failed to delete Rollout during cleanup: %w", delErr)
+		}
+		log.Info("Deleted owned Rollout", "rollout", rollout.Name)
+	} else if !errors.IsNotFound(err) {
+		return ctrl.Result{}, fmt.Errorf("failed to get Rollout during cleanup: %w", err)
+	}
+
+	// Remove the finalizer so the API server can complete deletion
+	controllerutil.RemoveFinalizer(agentDeploy, agentDeploymentFinalizer)
+	if err := r.Update(ctx, agentDeploy); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
+	}
+
+	log.Info("Finalizer removed, AgentDeployment deletion proceeding", "name", agentDeploy.Name)
 	return ctrl.Result{}, nil
 }
 
@@ -174,6 +236,13 @@ exporters:
       insecure: true
   logging:
     loglevel: info
+  # Prometheus exporter on port 8889 so agent metrics are scrapeable by Prometheus.
+  # The AgentRoll PodMonitor (config/prometheus/agent-pod-monitor.yaml) scrapes this
+  # endpoint and makes metrics available in the AgentRoll Grafana dashboard.
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    resource_to_telemetry_conversion:
+      enabled: true
 
 service:
   pipelines:
@@ -184,7 +253,7 @@ service:
     metrics:
       receivers: [otlp]
       processors: [resource, batch]
-      exporters: [otlp, logging]
+      exporters: [otlp, logging, prometheus]
 `,
 		agentDeploy.Name,
 		agentDeploy.Spec.AgentMeta.PromptVersion,
@@ -351,13 +420,73 @@ func translateSteps(agentDeploy *agentrollv1alpha1.AgentDeployment) []rolloutsv1
 							Name:  "canary-version",
 							Value: fmt.Sprintf("%s.%s", agentDeploy.Spec.AgentMeta.PromptVersion, agentDeploy.Spec.AgentMeta.ModelVersion),
 						},
+						{
+							// The currently stable version, used by token_cost_ratio and
+							// similar metrics that compare canary cost against stable baseline.
+							Name:  "stable-version",
+							Value: agentDeploy.Status.StableVersion,
+						},
 					},
 				},
 			})
 		}
 	}
 
+	// Item 3: When rollback.onCostSpike is configured, automatically inject a
+	// managed agent-cost-check analysis step after all user-defined steps.
+	// This compares canary vs stable token cost and fails if the ratio exceeds threshold.
+	if agentDeploy.Spec.Rollback != nil && agentDeploy.Spec.Rollback.OnCostSpike != nil {
+		maxRatio := parseCostThreshold(agentDeploy.Spec.Rollback.OnCostSpike.Threshold)
+		argoSteps = append(argoSteps, rolloutsv1alpha1.CanaryStep{
+			Analysis: &rolloutsv1alpha1.RolloutAnalysis{
+				Templates: []rolloutsv1alpha1.AnalysisTemplateRef{
+					{TemplateName: "agent-cost-check"},
+				},
+				Args: []rolloutsv1alpha1.AnalysisRunArgument{
+					{
+						Name:  "canary-version",
+						Value: fmt.Sprintf("%s.%s", agentDeploy.Spec.AgentMeta.PromptVersion, agentDeploy.Spec.AgentMeta.ModelVersion),
+					},
+					{Name: "stable-version", Value: agentDeploy.Status.StableVersion},
+					{Name: "max-cost-ratio", Value: fmt.Sprintf("%.2f", maxRatio)},
+					{Name: "langfuse-secret-name", Value: langfuseSecretName(agentDeploy)},
+					{Name: "langfuse-host", Value: langfuseHost(agentDeploy)},
+				},
+			},
+		})
+	}
+
 	return argoSteps
+}
+
+// parseCostThreshold converts a percentage string like "200%" to a float ratio (2.0).
+func parseCostThreshold(threshold string) float64 {
+	s := strings.TrimSuffix(strings.TrimSpace(threshold), "%")
+	pct, err := strconv.ParseFloat(s, 64)
+	if err != nil || pct <= 0 {
+		return 2.0 // default: 200% = 2x
+	}
+	return pct / 100.0
+}
+
+// langfuseSecretName returns the Langfuse K8s secret name from spec, or the default.
+func langfuseSecretName(agentDeploy *agentrollv1alpha1.AgentDeployment) string {
+	if agentDeploy.Spec.Observability != nil &&
+		agentDeploy.Spec.Observability.Langfuse != nil &&
+		agentDeploy.Spec.Observability.Langfuse.SecretRef != "" {
+		return agentDeploy.Spec.Observability.Langfuse.SecretRef
+	}
+	return "langfuse-credentials"
+}
+
+// langfuseHost returns the Langfuse server URL from spec, or cloud.langfuse.com.
+func langfuseHost(agentDeploy *agentrollv1alpha1.AgentDeployment) string {
+	if agentDeploy.Spec.Observability != nil &&
+		agentDeploy.Spec.Observability.Langfuse != nil &&
+		agentDeploy.Spec.Observability.Langfuse.Endpoint != "" {
+		return agentDeploy.Spec.Observability.Langfuse.Endpoint
+	}
+	return "https://cloud.langfuse.com"
 }
 
 func parseDuration(d string) *intstr.IntOrString {
@@ -433,29 +562,7 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 				"app.kubernetes.io/managed-by": "agentroll",
 				"agentroll.dev/template-type":  "quality",
 			}
-
-			// AnalysisTemplate declares args that will be populated by the Rollout
-			// when it creates an AnalysisRun. These args are passed in translateSteps().
-			defaultPort := "8080"
-			template.Spec = rolloutsv1alpha1.AnalysisTemplateSpec{
-				Args: []rolloutsv1alpha1.Argument{
-					{Name: "service-name"},
-					{Name: "service-port", Value: &defaultPort},
-					{Name: "namespace"},
-				},
-				Metrics: []rolloutsv1alpha1.Metric{
-					{
-						Name: "agent-health",
-						// The analysis runner exits 0 on success, non-zero on failure.
-						// Argo Rollouts Job metrics use the Job completion status.
-						Provider: rolloutsv1alpha1.MetricProvider{
-							Job: &rolloutsv1alpha1.JobMetric{
-								Spec: analysisJobSpec(),
-							},
-						},
-					},
-				},
-			}
+			template.Spec = buildManagedTemplateSpec(name)
 			return nil
 		})
 
@@ -469,17 +576,82 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 	return nil
 }
 
-// analysisJobSpec creates a Job that runs the AgentRoll analysis runner.
-// The runner sends test queries to the agent, validates responses,
-// measures latency, and exits with 0 (pass) or 1 (fail).
-//
-// This replaces the Sprint 2 busybox placeholder with real quality checks.
-// The analysis runner image contains a Python script that:
-//  1. Checks the agent's /healthz endpoint
-//  2. Sends test queries to /query
-//  3. Validates response length, latency, and content
-//  4. Exits with appropriate status code
-func analysisJobSpec() batchv1.JobSpec {
+// buildManagedTemplateSpec returns the AnalysisTemplateSpec for a managed template.
+// agent-quality-check: runner.py-based health + quality checks against the agent HTTP API.
+// agent-cost-check: langfuse_metrics.py-based token cost comparison (canary vs stable).
+func buildManagedTemplateSpec(name string) rolloutsv1alpha1.AnalysisTemplateSpec {
+	switch name {
+	case "agent-cost-check":
+		return costCheckTemplateSpec()
+	default:
+		return qualityCheckTemplateSpec()
+	}
+}
+
+// qualityCheckTemplateSpec builds the spec for the agent-quality-check managed template.
+// Runs runner.py as a Job: health check, query validation, latency, content quality.
+func qualityCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
+	defaultPort := "8080"
+	return rolloutsv1alpha1.AnalysisTemplateSpec{
+		Args: []rolloutsv1alpha1.Argument{
+			{Name: "service-name"},
+			{Name: "service-port", Value: &defaultPort},
+			{Name: "namespace"},
+		},
+		Metrics: []rolloutsv1alpha1.Metric{
+			{
+				Name: "agent-health",
+				// The analysis runner exits 0 on success, non-zero on failure.
+				// Argo Rollouts Job metrics use the Job completion status.
+				Provider: rolloutsv1alpha1.MetricProvider{
+					Job: &rolloutsv1alpha1.JobMetric{
+						Spec: qualityJobSpec(),
+					},
+				},
+			},
+		},
+	}
+}
+
+// costCheckTemplateSpec builds the spec for the agent-cost-check managed template.
+// Runs langfuse_metrics.py with METRIC=token_cost_ratio to compare canary vs stable
+// token cost.  Injected automatically when spec.rollback.onCostSpike is configured.
+func costCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
+	defaultLangfuseHost := "https://cloud.langfuse.com"
+	defaultLangfuseSecret := "langfuse-credentials"
+	defaultMaxCostRatio := "2.0"
+	defaultTimeWindow := "10"
+	defaultMinTraces := "5"
+	count := intstr.FromInt(3)
+	failureLimit := intstr.FromInt(1)
+	return rolloutsv1alpha1.AnalysisTemplateSpec{
+		Args: []rolloutsv1alpha1.Argument{
+			{Name: "canary-version"},
+			{Name: "stable-version"},
+			{Name: "max-cost-ratio", Value: &defaultMaxCostRatio},
+			{Name: "langfuse-host", Value: &defaultLangfuseHost},
+			{Name: "langfuse-secret-name", Value: &defaultLangfuseSecret},
+			{Name: "time-window-minutes", Value: &defaultTimeWindow},
+			{Name: "min-traces", Value: &defaultMinTraces},
+		},
+		Metrics: []rolloutsv1alpha1.Metric{
+			{
+				Name:         "token-cost-ratio",
+				Interval:     "2m",
+				Count:        &count,
+				FailureLimit: &failureLimit,
+				Provider: rolloutsv1alpha1.MetricProvider{
+					Job: &rolloutsv1alpha1.JobMetric{
+						Spec: costCheckJobSpec(),
+					},
+				},
+			},
+		},
+	}
+}
+
+// qualityJobSpec creates a Job spec for the runner.py-based quality check.
+func qualityJobSpec() batchv1.JobSpec {
 	backoffLimit := int32(0)
 	return batchv1.JobSpec{
 		BackoffLimit: &backoffLimit,
@@ -496,14 +668,59 @@ func analysisJobSpec() batchv1.JobSpec {
 								Name:  "AGENT_SERVICE_URL",
 								Value: "http://{{args.service-name}}.{{args.namespace}}.svc:{{args.service-port}}",
 							},
+							{Name: "MAX_LATENCY_MS", Value: "10000"},
+							{Name: "MIN_RESPONSE_LEN", Value: "50"},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// costCheckJobSpec creates a Job spec for the langfuse_metrics.py cost ratio check.
+// Compares canary token cost (per trace) against stable token cost using Langfuse data.
+func costCheckJobSpec() batchv1.JobSpec {
+	backoffLimit := int32(0)
+	return batchv1.JobSpec{
+		BackoffLimit: &backoffLimit,
+		Template: corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyNever,
+				Containers: []corev1.Container{
+					{
+						Name:  "cost-checker",
+						Image: defaultLangfuseMetricsImage,
+						Env: []corev1.EnvVar{
+							{Name: "LANGFUSE_HOST", Value: "{{args.langfuse-host}}"},
 							{
-								Name:  "MAX_LATENCY_MS",
-								Value: "10000",
+								Name: "LANGFUSE_PUBLIC_KEY",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "{{args.langfuse-secret-name}}",
+										},
+										Key: "public-key",
+									},
+								},
 							},
 							{
-								Name:  "MIN_RESPONSE_LEN",
-								Value: "50",
+								Name: "LANGFUSE_SECRET_KEY",
+								ValueFrom: &corev1.EnvVarSource{
+									SecretKeyRef: &corev1.SecretKeySelector{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: "{{args.langfuse-secret-name}}",
+										},
+										Key: "secret-key",
+									},
+								},
 							},
+							{Name: "CANARY_VERSION", Value: "{{args.canary-version}}"},
+							{Name: "STABLE_VERSION", Value: "{{args.stable-version}}"},
+							{Name: "METRIC", Value: "token_cost_ratio"},
+							{Name: "MAX_COST_RATIO", Value: "{{args.max-cost-ratio}}"},
+							{Name: "TIME_WINDOW_MINUTES", Value: "{{args.time-window-minutes}}"},
+							{Name: "MIN_TRACES", Value: "{{args.min-traces}}"},
 						},
 					},
 				},
@@ -761,6 +978,9 @@ func buildPodSpec(agentDeploy *agentrollv1alpha1.AgentDeployment) corev1.PodSpec
 				{ContainerPort: 4317, Name: "otlp-grpc", Protocol: corev1.ProtocolTCP},
 				{ContainerPort: 4318, Name: "otlp-http", Protocol: corev1.ProtocolTCP},
 				{ContainerPort: 8888, Name: "metrics", Protocol: corev1.ProtocolTCP},
+				// Port 8889: Prometheus exporter for agent application metrics.
+				// Scraped by the AgentRoll PodMonitor → visible in Grafana dashboard.
+				{ContainerPort: 8889, Name: "metrics-prom", Protocol: corev1.ProtocolTCP},
 			},
 			Env: []corev1.EnvVar{
 				{Name: "OTEL_EXPORT_ENDPOINT", Value: collectorEndpoint},

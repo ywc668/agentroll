@@ -7,15 +7,7 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 
 ## Sprint 3 — Observability & Credible Quality Gates
 
-### P1 (next)
-
-- Grafana dashboard panels wired to OTel sidecar metrics
-- Additional Langfuse metrics: avg latency, token consumption ratio vs stable
-
-### P2
-
-- `onCostSpike` enforcement in the controller
-- Finalizer for orphaned Argo Rollout cleanup on AgentDeployment delete
+### Completed (P1 + P2)
 
 ---
 
@@ -56,3 +48,7 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 | 3 P1 | `docs/langfuse/SETUP.md` — Langfuse setup guide for self-hosted and cloud.langfuse.com |
 | 3 P2 | E2E test: bad canary rejection flow (`test/e2e/e2e_test.go` — always-fail AnalysisTemplate + rollback assertion) |
 | 3 P2 | Makefile `setup-test-e2e` installs Argo Rollouts into the test Kind cluster |
+| 3 P1 | OTel → Prometheus → Grafana pipeline: `agent.py` emits OTLP metrics (request counter, duration histogram, token counter, tool call counter); OTel sidecar config adds `prometheus` exporter on port 8889; `config/prometheus/agent-pod-monitor.yaml` PodMonitor scrapes all agent pods |
+| 3 P1 | Additional Langfuse metrics: `avg_latency` (avg/p95 from trace latency field) and `token_cost_ratio` (per-trace cost canary vs stable) added to `langfuse_metrics.py`; `agent-langfuse-check.yaml` updated with `metric` arg to switch between all three metrics |
+| 3 P2 | `onCostSpike` enforcement: controller auto-injects `agent-cost-check` analysis step when `spec.rollback.onCostSpike` is set; `agent-cost-check` managed template implemented using `langfuse_metrics.py token_cost_ratio`; threshold parsed from `"200%"` format |
+| 3 P2 | Finalizer: controller adds `agentroll.dev/finalizer` to all AgentDeployments and explicitly deletes owned Argo Rollout on deletion to prevent orphaned resources |

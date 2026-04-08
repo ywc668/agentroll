@@ -4,3 +4,5 @@ anthropic==0.43.0
 kubernetes==31.0.0
 pydantic==2.10.0
 langfuse>=2.0.0,<3.0.0
+opentelemetry-sdk>=1.24.0
+opentelemetry-exporter-otlp-proto-http>=1.24.0

@@ -81,6 +81,15 @@ var _ = Describe("AgentDeployment Controller", func() {
 
 			By("Cleanup the specific resource instance AgentDeployment")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+
+			// Run the reconciler to process the finalizer so the object is actually deleted
+			controllerReconciler := &AgentDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
 		})
 
 		It("should successfully reconcile the resource", func() {
@@ -142,11 +151,15 @@ var _ = Describe("AgentDeployment Controller", func() {
 			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 
-			// Clean up generated resources
-			rollout := &rolloutsv1alpha1.Rollout{}
-			if err := k8sClient.Get(ctx, nn, rollout); err == nil {
-				Expect(k8sClient.Delete(ctx, rollout)).To(Succeed())
+			// Run the reconciler to process the finalizer (which deletes the Rollout)
+			// before we attempt manual cleanup of other generated resources.
+			controllerReconciler := &AgentDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
 			}
+			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+
+			// Clean up any remaining generated resources (template may not be owned)
 			template := &rolloutsv1alpha1.AnalysisTemplate{}
 			templateNN := types.NamespacedName{Name: "agent-quality-check", Namespace: "default"}
 			if err := k8sClient.Get(ctx, templateNN, template); err == nil {

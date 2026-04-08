@@ -1,0 +1,40 @@
+# PodMonitor to scrape the OTel sidecar's Prometheus endpoint on agent pods.
+# This makes agent application metrics (request rate, latency, token usage, tool calls)
+# available in Prometheus and the AgentRoll Grafana dashboard.
+#
+# Requirements:
+#   - Prometheus Operator installed (kube-prometheus-stack or standalone)
+#   - OTel sidecar enabled: observability.opentelemetry.enabled: true in AgentDeployment
+#   - The sidecar exposes Prometheus metrics on port 8889 (metrics-prom)
+#
+# Apply once per cluster:
+#   kubectl apply -f config/prometheus/agent-pod-monitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: agentroll-agent-metrics
+  labels:
+    app.kubernetes.io/name: agentroll
+    app.kubernetes.io/managed-by: agentroll
+spec:
+  # Scrape all pods stamped with the agentroll managed-by label (all deployed agents)
+  selector:
+    matchLabels:
+      app.kubernetes.io/managed-by: agentroll
+  # Match pods across all namespaces — agents may live in any namespace
+  namespaceSelector:
+    any: true
+  podMetricsEndpoints:
+    - port: metrics-prom
+      path: /metrics
+      interval: 30s
+      # Promote AgentRoll pod labels to Prometheus metric labels for Grafana filtering
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          targetLabel: agent
+        - sourceLabels: [__meta_kubernetes_pod_label_agentroll_dev_composite_version]
+          targetLabel: composite_version
+        - sourceLabels: [__meta_kubernetes_pod_label_agentroll_dev_prompt_version]
+          targetLabel: prompt_version
+        - sourceLabels: [__meta_kubernetes_pod_label_agentroll_dev_model_version]
+          targetLabel: model_version

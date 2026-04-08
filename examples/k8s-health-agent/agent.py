@@ -18,6 +18,7 @@ This agent is intentionally simple — it demonstrates how to:
 import os
 import json
 import logging
+import time
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from kubernetes import client, config
@@ -39,6 +40,21 @@ except ImportError:
     langfuse_context = None
 
 LANGFUSE_ENABLED = _LANGFUSE_AVAILABLE and bool(os.getenv("LANGFUSE_SECRET_KEY"))
+
+# Optional OpenTelemetry metrics — active when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+# The AgentRoll OTel sidecar (enabled via observability.opentelemetry.enabled=true) receives
+# these metrics via OTLP and exposes them as Prometheus on port 8889, wired to Grafana.
+try:
+    from opentelemetry import metrics as otel_metrics
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.sdk.resources import Resource
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _OTEL_AVAILABLE = False
+
+OTEL_ENABLED = _OTEL_AVAILABLE and bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 # ============================================================
 # Configuration
@@ -74,6 +90,43 @@ ACTIVE_SYSTEM_PROMPT = DEGRADED_SYSTEM_PROMPT if _IS_DEGRADED else SYSTEM_PROMPT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("k8s-health-agent")
+
+# ============================================================
+# OTel metrics setup
+# ============================================================
+
+if OTEL_ENABLED:
+    _otel_resource = Resource.create({
+        "service.name": "k8s-health-agent",
+        "agentroll.prompt.version": PROMPT_VERSION,
+        "agentroll.model.version": MODEL_VERSION,
+    })
+    _otel_reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(),
+        export_interval_millis=10_000,
+    )
+    _otel_provider = MeterProvider(resource=_otel_resource, metric_readers=[_otel_reader])
+    otel_metrics.set_meter_provider(_otel_provider)
+    _meter = otel_metrics.get_meter("k8s-health-agent")
+    _request_counter = _meter.create_counter(
+        "agent.requests.total", description="Total agent requests processed"
+    )
+    _duration_histogram = _meter.create_histogram(
+        "agent.request.duration", unit="s", description="Agent request duration in seconds"
+    )
+    _token_counter = _meter.create_counter(
+        "agent.tokens.total", description="Total tokens consumed by agent LLM calls"
+    )
+    _tool_call_counter = _meter.create_counter(
+        "agent.tool.calls.total", description="Total tool calls made by agent"
+    )
+    logger.info("OTel metrics enabled, exporting to %s", os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+else:
+    class _Noop:
+        def add(self, *a, **kw): pass
+        def record(self, *a, **kw): pass
+    _request_counter = _token_counter = _tool_call_counter = _Noop()
+    _duration_histogram = _Noop()
 
 # ============================================================
 # Kubernetes client setup
@@ -289,6 +342,12 @@ def run_agent(question: str) -> tuple[str, int]:
 
     tool_calls_count = 0
 
+    # OTel: track request start time and token usage across all LLM calls
+    _req_start = time.time()
+    _input_tokens = 0
+    _output_tokens = 0
+    _otel_attrs = {"agent": "k8s-health-agent", "prompt_version": PROMPT_VERSION, "model_version": MODEL_VERSION}
+
     # Agent loop: Claude may request multiple tool calls before giving a final answer
     max_iterations = 5
     for i in range(max_iterations):
@@ -302,6 +361,11 @@ def run_agent(question: str) -> tuple[str, int]:
             create_kwargs["tools"] = active_tools
 
         response = claude.messages.create(**create_kwargs)
+
+        # Accumulate token usage for OTel metrics
+        if response.usage:
+            _input_tokens += response.usage.input_tokens
+            _output_tokens += response.usage.output_tokens
 
         # Check if Claude wants to call tools
         if response.stop_reason == "tool_use":
@@ -331,8 +395,18 @@ def run_agent(question: str) -> tuple[str, int]:
                 if hasattr(block, "text"):
                     final_text += block.text
             logger.info(f"Agent response complete | iterations={i+1} tool_calls={tool_calls_count}")
+            # Record OTel metrics for this request
+            _request_counter.add(1, attributes=_otel_attrs)
+            _duration_histogram.record(time.time() - _req_start, attributes=_otel_attrs)
+            _token_counter.add(_input_tokens, attributes={**_otel_attrs, "token_type": "input"})
+            _token_counter.add(_output_tokens, attributes={**_otel_attrs, "token_type": "output"})
             return final_text, tool_calls_count
 
+    # Record OTel metrics even on max-iterations path
+    _request_counter.add(1, attributes=_otel_attrs)
+    _duration_histogram.record(time.time() - _req_start, attributes=_otel_attrs)
+    _token_counter.add(_input_tokens, attributes={**_otel_attrs, "token_type": "input"})
+    _token_counter.add(_output_tokens, attributes={**_otel_attrs, "token_type": "output"})
     return "Agent reached maximum iterations without a final answer.", tool_calls_count
 
 
@@ -341,8 +415,16 @@ def _execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a single tool call and return the result as a string. Traced as a Langfuse span."""
     if LANGFUSE_ENABLED and langfuse_context is not None:
         langfuse_context.update_current_observation(metadata={"tool": tool_name, "input": tool_input})
+    _attrs = {"agent": "k8s-health-agent", "tool": tool_name}
     if tool_name in TOOLS:
-        return TOOLS[tool_name](**tool_input)
+        result = TOOLS[tool_name](**tool_input)
+        try:
+            _status = "error" if "error" in json.loads(result) else "success"
+        except Exception:
+            _status = "success"
+        _tool_call_counter.add(1, attributes={**_attrs, "status": _status})
+        return result
+    _tool_call_counter.add(1, attributes={**_attrs, "status": "error"})
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
