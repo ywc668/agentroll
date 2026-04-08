@@ -1,0 +1,150 @@
+version: 2
+
+project_name: agentroll
+
+before:
+  hooks:
+    - go mod tidy
+    - make manifests generate
+
+builds:
+  - id: manager
+    main: ./cmd/main.go
+    binary: manager
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+# Multi-arch images: build per-arch, then combine into a manifest list.
+dockers:
+  - id: manager-amd64
+    ids: [manager]
+    goos: linux
+    goarch: amd64
+    image_templates:
+      - "ghcr.io/ywc668/agentroll:{{ .Tag }}-amd64"
+      - "ghcr.io/ywc668/agentroll:latest-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=agentroll"
+      - "--label=org.opencontainers.image.description=Kubernetes-native progressive delivery for AI agents"
+      - "--label=org.opencontainers.image.url=https://github.com/ywc668/agentroll"
+      - "--label=org.opencontainers.image.source=https://github.com/ywc668/agentroll"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    dockerfile: Dockerfile
+    use: buildx
+
+  - id: manager-arm64
+    ids: [manager]
+    goos: linux
+    goarch: arm64
+    image_templates:
+      - "ghcr.io/ywc668/agentroll:{{ .Tag }}-arm64"
+      - "ghcr.io/ywc668/agentroll:latest-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=agentroll"
+      - "--label=org.opencontainers.image.description=Kubernetes-native progressive delivery for AI agents"
+      - "--label=org.opencontainers.image.url=https://github.com/ywc668/agentroll"
+      - "--label=org.opencontainers.image.source=https://github.com/ywc668/agentroll"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    dockerfile: Dockerfile
+    use: buildx
+
+docker_manifests:
+  - name_template: "ghcr.io/ywc668/agentroll:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/ywc668/agentroll:{{ .Tag }}-amd64"
+      - "ghcr.io/ywc668/agentroll:{{ .Tag }}-arm64"
+  - name_template: "ghcr.io/ywc668/agentroll:latest"
+    image_templates:
+      - "ghcr.io/ywc668/agentroll:latest-amd64"
+      - "ghcr.io/ywc668/agentroll:latest-arm64"
+
+# Helm chart — packaged and pushed as an OCI artifact to ghcr.io.
+# Install: helm install agentroll oci://ghcr.io/ywc668/charts/agentroll --version <tag>
+publishers:
+  - name: helm-chart
+    ids: []
+    checksum: false
+    cmd: |
+      helm package charts/agentroll \
+        --version {{ .Version }} \
+        --app-version {{ .Version }} \
+        --destination /tmp/helm-pkg
+      helm push /tmp/helm-pkg/agentroll-{{ .Version }}.tgz oci://ghcr.io/ywc668/charts
+
+checksum:
+  name_template: "checksums.txt"
+
+archives:
+  - id: binaries
+    # The manager ships as a container image; this archive satisfies goreleaser's requirement.
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+  groups:
+    - title: "Breaking Changes"
+      regexp: "^.*!:"
+      order: 0
+    - title: "New Features"
+      regexp: "^.*feat[(\\[]"
+      order: 1
+    - title: "Bug Fixes"
+      regexp: "^.*fix[(\\[]"
+      order: 2
+    - title: "Other Changes"
+      order: 999
+
+release:
+  github:
+    owner: ywc668
+    name: agentroll
+  name_template: "AgentRoll {{ .Tag }}"
+  header: |
+    ## AgentRoll {{ .Tag }}
+
+    Kubernetes-native progressive delivery for AI agents.
+
+    ### Quick Install
+
+    ```bash
+    # Helm (OCI)
+    helm install agentroll oci://ghcr.io/ywc668/charts/agentroll \
+      --version {{ .Tag }} \
+      --namespace agentroll-system \
+      --create-namespace
+
+    # Or kustomize
+    kubectl apply -k https://github.com/ywc668/agentroll/config/default?ref={{ .Tag }}
+    ```
+
+    **Note:** Requires [Argo Rollouts](https://argoproj.github.io/argo-rollouts/installation/) and [cert-manager](https://cert-manager.io/docs/installation/) pre-installed.
+  footer: |
+    **Full Changelog**: https://github.com/ywc668/agentroll/compare/{{ .PreviousTag }}...{{ .Tag }}

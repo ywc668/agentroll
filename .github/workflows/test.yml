@@ -1,23 +1,17 @@
-name: Tests
+# Superseded by ci.yml — kept as a no-op redirect to avoid breaking
+# any branch protection rules that reference this workflow name.
+# You can safely delete this file once branch protection rules are updated.
+name: Tests (legacy — see ci.yml)
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
-  test:
+  redirect:
     name: Run on Ubuntu
     runs-on: ubuntu-latest
     steps:
-      - name: Clone the code
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Running Tests
-        run: |
-          go mod tidy
-          make test
+      - run: echo "Unit tests now run in ci.yml (Build & test job). This job is a no-op."

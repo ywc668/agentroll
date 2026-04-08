@@ -314,15 +314,11 @@ AgentRoll uses a principled approach to evaluation templates:
 
 ## Roadmap
 
-All planned sprints are complete. See [docs/ROADMAP.md](docs/ROADMAP.md) for the full history.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the detailed sprint plan.
 
-- **Sprint 0** ✅ — Project setup, CRD design, community foundation
-- **Sprint 1** ✅ — Core controller: AgentDeployment → Rollout + Service
-- **Sprint 2** ✅ — Canary strategy, 3-layer AnalysisTemplate, status sync
-- **Sprint 2.5** ✅ — `k8s-health-agent` dogfooding, OTel sidecar, real analysis runner
-- **Sprint 3** ✅ — Quality gates end-to-end; Langfuse integration (tool success, latency, cost, hallucination); OTel → Prometheus → Grafana pipeline
-- **Sprint 4** ✅ — Production hardening: Terraform bootstrap, multi-framework examples (LangGraph/CrewAI/AutoGen), KEDA autoscaling, RBAC hardening
-- **Sprint 5** ✅ — Ecosystem: MCP tool lifecycle with semver gates, A2A multi-agent coordination, hallucination rate signal
+- **Sprints 0–5** ✅ — Core controller, canary delivery, Langfuse/OTel/Grafana, KEDA, Terraform, MCP, A2A, hallucination rate
+- **Sprint 6** 🔨 — Production readiness: release pipeline, Kubernetes Events, status conditions, RBAC audit, security scanning
+- **Sprint 7** 📋 — Self-evolution: threshold tuner, prompt optimizer, model upgrader
 
 ## Contributing
 
