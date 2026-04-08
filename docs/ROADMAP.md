@@ -11,12 +11,9 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 
 ---
 
-## Sprint 4 — Production Hardening
+## Sprint 4 — Production Hardening (complete)
 
-- Terraform modules for cluster bootstrapping (Argo Rollouts + AgentRoll + Langfuse)
-- Multi-framework validation: LangGraph, CrewAI, AutoGen dogfooding examples
-- KEDA `ScaledObject` generation from `spec.scaling.queueRef`
-- RBAC hardening: least-privilege per-agent service accounts
+All Sprint 4 items delivered.
 
 ---
 
@@ -52,3 +49,7 @@ learning loop), see [ADR-002](adr/002-continuous-learning-vision.md).
 | 3 P1 | Additional Langfuse metrics: `avg_latency` (avg/p95 from trace latency field) and `token_cost_ratio` (per-trace cost canary vs stable) added to `langfuse_metrics.py`; `agent-langfuse-check.yaml` updated with `metric` arg to switch between all three metrics |
 | 3 P2 | `onCostSpike` enforcement: controller auto-injects `agent-cost-check` analysis step when `spec.rollback.onCostSpike` is set; `agent-cost-check` managed template implemented using `langfuse_metrics.py token_cost_ratio`; threshold parsed from `"200%"` format |
 | 3 P2 | Finalizer: controller adds `agentroll.dev/finalizer` to all AgentDeployments and explicitly deletes owned Argo Rollout on deletion to prevent orphaned resources |
+| 4 | Terraform modules: `terraform/modules/{kind-cluster,argo-rollouts,agentroll,langfuse}` + `terraform/environments/local/` — one `terraform apply` bootstraps a full dev cluster |
+| 4 | Multi-framework examples: `examples/{langgraph-agent,crewai-agent,autogen-agent}` — each with agent.py, Dockerfile, requirements.txt, and AgentDeployment k8s manifest |
+| 4 | KEDA ScaledObject generation: `reconcileScaledObject()` creates KEDA ScaledObjects for redis/rabbitmq/sqs when `spec.scaling.queueRef` is set; gracefully skips if KEDA not installed |
+| 4 | RBAC hardening: `reconcileServiceAccount()` auto-creates a dedicated SA per agent when `spec.serviceAccountName` is unset; KEDA + ServiceAccount RBAC markers added |

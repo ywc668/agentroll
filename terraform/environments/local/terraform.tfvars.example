@@ -1,0 +1,17 @@
+# Copy this file to terraform.tfvars and adjust values before running apply.
+# Values marked CHANGE_ME must be set — do not commit real secrets to git.
+
+cluster_name = "agentroll-dev"
+
+# AgentRoll operator image — use "dev" to match a locally-loaded image
+agentroll_image_repository  = "ghcr.io/agentroll/agentroll"
+agentroll_image_tag         = "latest"
+agentroll_image_pull_policy = "IfNotPresent"
+
+# Langfuse credentials — these are seeded into the cluster on first boot
+# AND injected into the operator so it can query traces for quality gates.
+langfuse_public_key = "pk-agentroll-local"
+langfuse_secret_key = "sk-agentroll-local"  # CHANGE_ME in production
+
+langfuse_admin_email    = "admin@agentroll.local"
+langfuse_admin_password = "changeme-local"  # CHANGE_ME in production

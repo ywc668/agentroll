@@ -270,4 +270,118 @@ var _ = Describe("AgentDeployment Controller", func() {
 			Expect(updated.Status.StableVersion).To(ContainSubstring("claude-sonnet"))
 		})
 	})
+
+	Context("When reconciling with KEDA scaling configured", func() {
+		const resourceName = "keda-scaling-test"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			err := k8sClient.Get(ctx, nn, &agentrollv1alpha1.AgentDeployment{})
+			if err != nil && errors.IsNotFound(err) {
+				minReplicas := int32(1)
+				maxReplicas := int32(10)
+				resource := &agentrollv1alpha1.AgentDeployment{
+					ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+					Spec: agentrollv1alpha1.AgentDeploymentSpec{
+						Container: agentrollv1alpha1.AgentContainerSpec{
+							Image: "test-registry/my-agent:v1.0",
+						},
+						Rollout: agentrollv1alpha1.RolloutSpec{
+							Strategy: "canary",
+							Steps:    []agentrollv1alpha1.RolloutStep{{SetWeight: 100}},
+						},
+						Replicas: &minReplicas,
+						Scaling: &agentrollv1alpha1.ScalingSpec{
+							MinReplicas: minReplicas,
+							MaxReplicas: maxReplicas,
+							Metric:      "queue-depth",
+							TargetValue: 5,
+							QueueRef: &agentrollv1alpha1.QueueReference{
+								Provider:  "redis",
+								Address:   "redis.default.svc:6379",
+								QueueName: "agent-tasks",
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+		})
+
+		AfterEach(func() {
+			resource := &agentrollv1alpha1.AgentDeployment{}
+			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			controllerReconciler := &AgentDeploymentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		})
+
+		It("should reconcile without error when KEDA ScaledObject CRD is present", func() {
+			controllerReconciler := &AgentDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			// ScaledObject CRD is registered in envtest (test/crds/scaledobject-crd.yaml)
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the Argo Rollout was still created (scaling doesn't block rollout reconcile)")
+			rollout := &rolloutsv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, nn, rollout)).To(Succeed())
+		})
+	})
+
+	Context("RBAC hardening — auto-created ServiceAccount", func() {
+		const resourceName = "sa-auto-test"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			err := k8sClient.Get(ctx, nn, &agentrollv1alpha1.AgentDeployment{})
+			if err != nil && errors.IsNotFound(err) {
+				resource := &agentrollv1alpha1.AgentDeployment{
+					ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+					Spec: agentrollv1alpha1.AgentDeploymentSpec{
+						Container: agentrollv1alpha1.AgentContainerSpec{
+							Image: "test-registry/my-agent:v1.0",
+						},
+						Rollout: agentrollv1alpha1.RolloutSpec{
+							Strategy: "canary",
+							Steps:    []agentrollv1alpha1.RolloutStep{{SetWeight: 100}},
+						},
+						// ServiceAccountName intentionally empty — controller should auto-create
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+		})
+
+		AfterEach(func() {
+			resource := &agentrollv1alpha1.AgentDeployment{}
+			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			controllerReconciler := &AgentDeploymentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		})
+
+		It("should auto-create a ServiceAccount named after the agent", func() {
+			controllerReconciler := &AgentDeploymentReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying a ServiceAccount was created with the agent name")
+			sa := &corev1.ServiceAccount{}
+			Expect(k8sClient.Get(ctx, nn, sa)).To(Succeed())
+			Expect(sa.Labels["app.kubernetes.io/managed-by"]).To(Equal("agentroll"))
+
+			By("verifying the Rollout uses the auto-created ServiceAccount")
+			rollout := &rolloutsv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, nn, rollout)).To(Succeed())
+			Expect(rollout.Spec.Template.Spec.ServiceAccountName).To(Equal(resourceName))
+		})
+	})
 })

@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn==0.32.0
+langchain-anthropic>=0.3.0
+langgraph>=0.2.0
+langchain-core>=0.3.0
+kubernetes==31.0.0
+pydantic==2.10.0

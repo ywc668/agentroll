@@ -1,0 +1,5 @@
+fastapi==0.115.0
+uvicorn==0.32.0
+crewai>=0.80.0
+kubernetes==31.0.0
+pydantic==2.10.0

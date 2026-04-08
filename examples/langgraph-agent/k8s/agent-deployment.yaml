@@ -1,0 +1,62 @@
+# Deploy the LangGraph K8s Health Agent using AgentRoll.
+#
+# This example demonstrates AgentRoll's framework-agnostic deployment:
+# the same AgentDeployment CRD used for the baseline k8s-health-agent
+# works identically for this LangGraph-based implementation.
+#
+# Prerequisites:
+#   1. AgentRoll operator running (make run)
+#   2. Argo Rollouts installed
+#   3. ANTHROPIC_API_KEY secret created:
+#      kubectl create secret generic anthropic-credentials \
+#        --from-literal=api-key=YOUR_KEY
+
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: langgraph-agent
+  namespace: default
+  labels:
+    app: langgraph-agent
+    framework: langgraph
+    purpose: dogfooding
+spec:
+  replicas: 1
+
+  container:
+    image: ghcr.io/agentroll/langgraph-agent:v1
+    ports:
+      - containerPort: 8080
+        name: http
+    env:
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: anthropic-credentials
+            key: api-key
+      - name: PROMPT_VERSION
+        value: "v1"
+      - name: MODEL_VERSION
+        value: "claude-haiku-4-5-20251001"
+
+  agentMeta:
+    promptVersion: "v1"
+    modelProvider: "anthropic"
+    modelVersion: "claude-haiku-4-5-20251001"
+    labels:
+      framework: langgraph
+      domain: devops
+      purpose: dogfooding
+
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+        pause:
+          duration: "2m"
+        analysis:
+          templateRef: agent-quality-check
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true

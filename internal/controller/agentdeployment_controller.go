@@ -28,8 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,7 +67,9 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=argoproj.io,resources=analysistemplates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -116,6 +120,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Step 3.6: RBAC hardening — ensure a dedicated ServiceAccount exists for the agent.
+	// If spec.serviceAccountName is empty, auto-create one named after the agent.
+	// This provides pod-level isolation: agents don't inherit default SA permissions.
+	if err := r.reconcileServiceAccount(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile ServiceAccount")
+		return ctrl.Result{}, err
+	}
+
 	// Step 4: Reconcile Argo Rollout
 	if err := r.reconcileRollout(ctx, agentDeploy, compositeVersion); err != nil {
 		log.Error(err, "failed to reconcile Rollout")
@@ -125,6 +137,13 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Step 5: Reconcile Service
 	if err := r.reconcileService(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile Service")
+		return ctrl.Result{}, err
+	}
+
+	// Step 5.5: Reconcile KEDA ScaledObject (if scaling.queueRef is configured).
+	// Skipped gracefully when KEDA is not installed in the cluster.
+	if err := r.reconcileScaledObject(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile ScaledObject")
 		return ctrl.Result{}, err
 	}
 
@@ -1061,6 +1080,184 @@ func toServicePorts(containerPorts []corev1.ContainerPort) []corev1.ServicePort 
 		})
 	}
 	return svcPorts
+}
+
+// reconcileServiceAccount ensures a dedicated ServiceAccount exists for the agent.
+// When spec.serviceAccountName is empty the controller creates one named after the
+// agent, providing pod-level RBAC isolation (agents don't share the default SA).
+// When spec.serviceAccountName is explicitly set, this is a no-op — the user owns it.
+func (r *AgentDeploymentReconciler) reconcileServiceAccount(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) error {
+	// Only auto-create when the user has not explicitly named a service account
+	if agentDeploy.Spec.ServiceAccountName != "" {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+	saName := agentDeploy.Name // agent name = SA name for easy discoverability
+
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: agentDeploy.Namespace,
+		},
+	}
+
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+		sa.Labels = map[string]string{
+			"app.kubernetes.io/name":       agentDeploy.Name,
+			"app.kubernetes.io/managed-by": "agentroll",
+			"agentroll.dev/component":      "agent-service-account",
+		}
+		// No automountServiceAccountToken annotation — keep default (true) so the agent
+		// can use in-cluster credentials if it needs to call the Kubernetes API.
+		return controllerutil.SetControllerReference(agentDeploy, sa, r.Scheme)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to reconcile ServiceAccount: %w", err)
+	}
+
+	// Patch the spec so buildPodSpec picks up the auto-created SA name.
+	// We mutate in-memory; the AgentDeployment object itself is NOT patched to
+	// avoid infinite reconcile loops. The Rollout spec carries the correct name.
+	agentDeploy.Spec.ServiceAccountName = saName
+
+	log.Info("ServiceAccount reconciled", "name", sa.Name, "result", result)
+	return nil
+}
+
+// reconcileScaledObject creates or updates a KEDA ScaledObject for queue-depth
+// autoscaling when spec.scaling.queueRef is configured.
+//
+// The ScaledObject targets the Argo Rollout, using whatever queue backend the user
+// specified (redis, rabbitmq, sqs). KEDA translates queue depth into replica count.
+//
+// This function is a no-op when:
+//   - spec.scaling is nil
+//   - spec.scaling.queueRef is nil
+//   - KEDA is not installed (CRD missing → API returns NotFound on Create, skipped gracefully)
+func (r *AgentDeploymentReconciler) reconcileScaledObject(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) error {
+	if agentDeploy.Spec.Scaling == nil || agentDeploy.Spec.Scaling.QueueRef == nil {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+	scaling := agentDeploy.Spec.Scaling
+	queueRef := scaling.QueueRef
+
+	// Build the KEDA trigger based on the queue provider
+	trigger, err := buildKEDATrigger(queueRef, scaling.TargetValue)
+	if err != nil {
+		return fmt.Errorf("unsupported queue provider %q: %w", queueRef.Provider, err)
+	}
+
+	minReplicas := int64(scaling.MinReplicas)
+	maxReplicas := int64(scaling.MaxReplicas)
+
+	// Use unstructured so we don't need the KEDA Go SDK as a dependency.
+	// KEDA CRDs must be installed in the cluster for this to work.
+	scaledObject := &unstructured.Unstructured{}
+	scaledObject.SetGroupVersionKind(scaledObjectGVK)
+	scaledObject.SetName(agentDeploy.Name)
+	scaledObject.SetNamespace(agentDeploy.Namespace)
+
+	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, scaledObject, func() error {
+		scaledObject.SetLabels(map[string]string{
+			"app.kubernetes.io/name":       agentDeploy.Name,
+			"app.kubernetes.io/managed-by": "agentroll",
+		})
+		// ScaledObject spec: targets the Argo Rollout, not a Deployment
+		scaledObject.Object["spec"] = map[string]interface{}{
+			"scaleTargetRef": map[string]interface{}{
+				"apiVersion": "argoproj.io/v1alpha1",
+				"kind":       "Rollout",
+				"name":       agentDeploy.Name,
+			},
+			"minReplicaCount": minReplicas,
+			"maxReplicaCount": maxReplicas,
+			"triggers":        []interface{}{trigger},
+		}
+		return controllerutil.SetControllerReference(agentDeploy, scaledObject, r.Scheme)
+	})
+	if err != nil {
+		// If KEDA is not installed the API server returns "no kind is registered".
+		// Log a warning and skip rather than crashing the reconcile loop.
+		if errors.IsNotFound(err) || isNoCRDError(err) {
+			log.Info("KEDA ScaledObject CRD not found — KEDA may not be installed; skipping",
+				"agent", agentDeploy.Name)
+			return nil
+		}
+		return fmt.Errorf("failed to reconcile ScaledObject: %w", err)
+	}
+
+	log.Info("ScaledObject reconciled",
+		"name", scaledObject.GetName(),
+		"provider", queueRef.Provider,
+		"result", result,
+	)
+	return nil
+}
+
+// scaledObjectGVK is the GroupVersionKind for KEDA ScaledObjects.
+var scaledObjectGVK = schema.GroupVersionKind{
+	Group:   "keda.sh",
+	Version: "v1alpha1",
+	Kind:    "ScaledObject",
+}
+
+// buildKEDATrigger constructs the KEDA trigger map for the given queue provider.
+// Supported providers: redis, rabbitmq, sqs (aws-sqs-queue).
+func buildKEDATrigger(queueRef *agentrollv1alpha1.QueueReference, targetValue int32) (map[string]interface{}, error) {
+	switch queueRef.Provider {
+	case "redis":
+		return map[string]interface{}{
+			"type": "redis",
+			"metadata": map[string]interface{}{
+				"address":    queueRef.Address,
+				"listName":   queueRef.QueueName,
+				"listLength": fmt.Sprintf("%d", targetValue),
+			},
+		}, nil
+	case "rabbitmq":
+		return map[string]interface{}{
+			"type": "rabbitmq",
+			"metadata": map[string]interface{}{
+				"host":          queueRef.Address,
+				"queueName":     queueRef.QueueName,
+				"queueLength":   fmt.Sprintf("%d", targetValue),
+				"protocol":      "amqp",
+				"mode":          "QueueLength",
+			},
+		}, nil
+	case "sqs":
+		return map[string]interface{}{
+			"type": "aws-sqs-queue",
+			"metadata": map[string]interface{}{
+				"queueURL":            queueRef.Address,
+				"queueLength":         fmt.Sprintf("%d", targetValue),
+				"awsRegion":           "us-east-1", // users can override via env in the KEDA operator
+			},
+		}, nil
+	default:
+		return nil, fmt.Errorf("supported providers: redis, rabbitmq, sqs")
+	}
+}
+
+// isNoCRDError returns true for API errors that indicate a CRD is not registered.
+// KEDA is optional — if it is not installed we skip ScaledObject creation silently.
+func isNoCRDError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no kind is registered") ||
+		strings.Contains(msg, "no matches for kind") ||
+		strings.Contains(msg, "resource type not known")
 }
 
 // SetupWithManager sets up the controller with the Manager.
