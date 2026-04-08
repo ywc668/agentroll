@@ -280,21 +280,23 @@ var _ = Describe("Manager", Ordered, func() {
 		//    strings.ToLower(<Kind>),
 		// ))
 	})
-})
 
-// ────────────────────────────────────────────────────────────────────────────
-// Bad canary rejection flow
-//
-// This test validates the full rollback pipeline:
-//   AgentDeployment (canary update) → controller creates Rollout + AnalysisRun
-//   → AnalysisRun fails → Argo Rollouts rolls back → AgentDeployment reflects failure
-//
-// The test uses a deliberately-failing AnalysisTemplate ("always-fail-check")
-// that runs `busybox exit 1` as the Job. This keeps the test deterministic and
-// free of LLM dependencies. The real LLM-based quality gate detection is
-// demonstrated by the bad-canary-demo scenario in examples/k8s-health-agent/.
-// ────────────────────────────────────────────────────────────────────────────
-var _ = Describe("Bad canary rejection flow", Ordered, func() {
+	// ────────────────────────────────────────────────────────────────────────────
+	// Bad canary rejection flow
+	//
+	// This test validates the full rollback pipeline:
+	//   AgentDeployment (canary update) → controller creates Rollout + AnalysisRun
+	//   → AnalysisRun fails → Argo Rollouts rolls back → AgentDeployment reflects failure
+	//
+	// The test uses a deliberately-failing AnalysisTemplate ("always-fail-check")
+	// that runs `busybox exit 1` as the Job. This keeps the test deterministic and
+	// free of LLM dependencies. The real LLM-based quality gate detection is
+	// demonstrated by the bad-canary-demo scenario in examples/k8s-health-agent/.
+	//
+	// NOTE: Nested inside Describe("Manager") so it always runs after CRDs are
+	// installed and the controller is deployed (Manager.BeforeAll handles setup).
+	// ────────────────────────────────────────────────────────────────────────────
+	Context("Bad canary rejection flow", func() {
 	const (
 		agentName     = "e2e-canary-agent"
 		testNamespace = "default"
@@ -486,7 +488,8 @@ spec:
 		Expect(phaseOut).NotTo(Equal("Stable"),
 			"AgentDeployment should not report Stable after a failed canary")
 	})
-})
+	}) // end Context("Bad canary rejection flow")
+}) // end Describe("Manager")
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
