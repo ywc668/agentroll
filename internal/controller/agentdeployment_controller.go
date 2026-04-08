@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	semver "github.com/Masterminds/semver/v3"
 	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
 
 	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
@@ -69,6 +71,7 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -108,6 +111,20 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Step 2: Build composite version
 	compositeVersion := buildCompositeVersion(agentDeploy)
 
+	// Step 2.5: A2A coordination — block canary progression if declared dependencies
+	// are not in Stable phase.  Returns a requeue request when dependencies are unmet
+	// so the controller re-checks automatically once dependencies stabilize.
+	requeue, err := r.checkAgentDependencies(ctx, agentDeploy)
+	if err != nil {
+		log.Error(err, "failed to check agent dependencies")
+		return ctrl.Result{}, err
+	}
+	if requeue {
+		log.Info("Agent dependencies not yet stable — requeueing",
+			"name", agentDeploy.Name, "dependsOn", agentDeploy.Spec.DependsOn)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// Step 3: Reconcile AnalysisTemplate
 	if err := r.reconcileAnalysisTemplate(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile AnalysisTemplate")
@@ -117,6 +134,13 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Step 3.5: Reconcile OTel ConfigMap (if enabled)
 	if err := r.reconcileOTelConfig(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile OTel ConfigMap")
+		return ctrl.Result{}, err
+	}
+
+	// Step 3.7: MCP tool lifecycle — resolve tool endpoints and validate version constraints.
+	// Injects MCP_TOOL_<NAME>_ENDPOINT env vars and blocks on unsatisfied semver constraints.
+	if err := r.reconcileToolDependencies(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile tool dependencies")
 		return ctrl.Result{}, err
 	}
 
@@ -1080,6 +1104,164 @@ func toServicePorts(containerPorts []corev1.ContainerPort) []corev1.ServicePort 
 		})
 	}
 	return svcPorts
+}
+
+// checkAgentDependencies validates A2A (agent-to-agent) dependencies declared in
+// spec.dependsOn.  Returns (true, nil) when any dependency is not yet in Stable
+// phase — the caller should requeue rather than continuing the reconcile loop.
+// This prevents a canary from receiving traffic if an upstream agent it calls is
+// itself degraded or rolling out.
+func (r *AgentDeploymentReconciler) checkAgentDependencies(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) (requeue bool, err error) {
+	if len(agentDeploy.Spec.DependsOn) == 0 {
+		return false, nil
+	}
+
+	log := logf.FromContext(ctx)
+
+	for _, depName := range agentDeploy.Spec.DependsOn {
+		dep := &agentrollv1alpha1.AgentDeployment{}
+		if fetchErr := r.Get(ctx, client.ObjectKey{
+			Name:      depName,
+			Namespace: agentDeploy.Namespace,
+		}, dep); fetchErr != nil {
+			if errors.IsNotFound(fetchErr) {
+				log.Info("Dependency AgentDeployment not found — requeueing",
+					"dependency", depName)
+				return true, nil
+			}
+			return false, fmt.Errorf("failed to fetch dependency %q: %w", depName, fetchErr)
+		}
+
+		if dep.Status.Phase != agentrollv1alpha1.PhaseStable {
+			log.Info("Dependency not yet stable",
+				"dependency", depName,
+				"phase", dep.Status.Phase,
+			)
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// reconcileToolDependencies resolves MCP tool dependency endpoints and validates
+// semver version constraints declared in spec.agentMeta.toolDependencies.
+//
+// For each declared tool:
+//  1. Discovers the tool endpoint: use spec.endpoint if provided; otherwise look for
+//     a Kubernetes Service named after the tool in the same namespace.
+//  2. Reads the deployed version from the Service annotation "agentroll.dev/tool-version".
+//  3. Validates the spec version constraint (semver) against the deployed version.
+//  4. If the constraint is satisfied (or no version constraint), injects
+//     MCP_TOOL_<NAME>_ENDPOINT into the agent container env vars (upper-cased, hyphens→underscores).
+//
+// Returns an error if a declared tool's version constraint is NOT met, blocking
+// the rollout.  Missing tools (Service not found) are skipped with a warning unless
+// a version constraint is specified, in which case they are blocking.
+func (r *AgentDeploymentReconciler) reconcileToolDependencies(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+) error {
+	if len(agentDeploy.Spec.AgentMeta.ToolDependencies) == 0 {
+		return nil
+	}
+
+	log := logf.FromContext(ctx)
+
+	for _, tool := range agentDeploy.Spec.AgentMeta.ToolDependencies {
+		endpoint := tool.Endpoint
+
+		if endpoint == "" {
+			// Service discovery: look for a K8s Service with the tool name
+			svc := &corev1.Service{}
+			if err := r.Get(ctx, client.ObjectKey{
+				Name:      tool.Name,
+				Namespace: agentDeploy.Namespace,
+			}, svc); err != nil {
+				if errors.IsNotFound(err) {
+					if tool.Version != "" {
+						// Version constraint specified but tool not found — blocking
+						return fmt.Errorf("MCP tool %q not found in namespace %q (required version: %s)",
+							tool.Name, agentDeploy.Namespace, tool.Version)
+					}
+					log.Info("MCP tool service not found, skipping endpoint injection",
+						"tool", tool.Name)
+					continue
+				}
+				return fmt.Errorf("failed to lookup service for MCP tool %q: %w", tool.Name, err)
+			}
+
+			// Validate semver version constraint if specified
+			if tool.Version != "" {
+				deployedVersion := svc.Annotations["agentroll.dev/tool-version"]
+				if deployedVersion == "" {
+					deployedVersion = svc.Labels["app.kubernetes.io/version"]
+				}
+				if deployedVersion != "" {
+					if err := validateSemverConstraint(tool.Name, tool.Version, deployedVersion); err != nil {
+						return err
+					}
+				} else {
+					log.Info("MCP tool has no version annotation — skipping version check",
+						"tool", tool.Name, "constraint", tool.Version)
+				}
+			}
+
+			// Build in-cluster endpoint from service name
+			port := int32(8080)
+			if len(svc.Spec.Ports) > 0 {
+				port = svc.Spec.Ports[0].Port
+			}
+			endpoint = fmt.Sprintf("http://%s.%s.svc:%d", tool.Name, agentDeploy.Namespace, port)
+		}
+
+		// Inject the resolved endpoint as MCP_TOOL_<NAME>_ENDPOINT
+		envVarName := "MCP_TOOL_" + strings.ToUpper(strings.ReplaceAll(tool.Name, "-", "_")) + "_ENDPOINT"
+		envVar := corev1.EnvVar{Name: envVarName, Value: endpoint}
+
+		// Append to container env if not already present (idempotent)
+		found := false
+		for _, e := range agentDeploy.Spec.Container.Env {
+			if e.Name == envVarName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			agentDeploy.Spec.Container.Env = append(agentDeploy.Spec.Container.Env, envVar)
+		}
+
+		log.Info("MCP tool dependency resolved",
+			"tool", tool.Name,
+			"endpoint", endpoint,
+			"versionConstraint", tool.Version,
+		)
+	}
+
+	return nil
+}
+
+// validateSemverConstraint checks that deployedVersion satisfies the semver constraint.
+// Returns a descriptive error if the constraint is not met.
+func validateSemverConstraint(toolName, constraint, deployedVersion string) error {
+	c, err := semver.NewConstraint(constraint)
+	if err != nil {
+		// Malformed constraint — treat as a warning, don't block
+		return nil
+	}
+	v, err := semver.NewVersion(deployedVersion)
+	if err != nil {
+		// Deployed version not parseable — skip constraint check
+		return nil
+	}
+	if !c.Check(v) {
+		return fmt.Errorf("MCP tool %q version constraint %q not met: deployed version is %s",
+			toolName, constraint, deployedVersion)
+	}
+	return nil
 }
 
 // reconcileServiceAccount ensures a dedicated ServiceAccount exists for the agent.

@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - serviceaccounts
   - services
   verbs:
   - create
@@ -56,6 +57,18 @@ rules:
   resources:
   - analysistemplates
   - rollouts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - keda.sh
+  resources:
+  - scaledobjects
   verbs:
   - create
   - delete

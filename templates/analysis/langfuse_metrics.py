@@ -27,6 +27,13 @@ Per-metric configuration:
     STABLE_VERSION       — Stable version tag to compare against (required)
     MAX_COST_RATIO       — Max allowed ratio of canary/stable cost (default: 2.0 = 200%)
                            Uses approximate Claude pricing: $3/M input, $15/M output tokens
+
+  hallucination_rate (fraction of traces where the agent hallucinated):
+    MAX_HALLUCINATION_RATE — Max fraction of traces with hallucination (default: 0.10 = 10%)
+    Hallucination detection uses Langfuse Scores: looks for scores with name
+    "hallucination" or "factuality" on each trace.  A trace is flagged as hallucinated
+    when: hallucination score > 0.5 OR factuality score < 0.5.
+    Traces without any such scores are skipped (not penalised — scorer must run first).
 """
 
 import os
@@ -168,6 +175,78 @@ def compute_tool_success_rate(
     }
 
 
+def fetch_scores_for_trace(host: str, auth_header: str, trace_id: str) -> list:
+    """
+    Query GET /api/public/scores?traceId=<id> to get evaluation scores for a trace.
+    Scores are typically set by human evaluators or automated eval pipelines.
+    """
+    params = urllib.parse.urlencode({"traceId": trace_id, "limit": 50})
+    url = f"{host}/api/public/scores?{params}"
+    req = urllib.request.Request(url, headers={"Authorization": auth_header})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read())
+        return data.get("data", [])
+
+
+def compute_hallucination_rate(
+    host: str,
+    auth_header: str,
+    traces: list,
+) -> dict:
+    """
+    Compute the fraction of traces where the agent hallucinated, using Langfuse Scores.
+
+    A trace is considered hallucinated when any of the following scores exist:
+      - name="hallucination": numeric value > 0.5  (higher = more hallucinated)
+      - name="factuality":    numeric value < 0.5  (lower = less factual)
+
+    Traces with no hallucination/factuality scores are skipped (not penalised).
+    This means the metric only triggers when an automated eval pipeline or human
+    reviewers have explicitly scored traces — no scores → inconclusive.
+
+    Returns a dict with hallucination_rate, hallucinated_traces, scored_traces, traces_analyzed.
+    """
+    scored = 0
+    hallucinated = 0
+
+    for trace in traces:
+        try:
+            scores = fetch_scores_for_trace(host, auth_header, trace["id"])
+        except Exception as e:
+            log(f"  Warning: could not fetch scores for trace {trace['id']}: {e}")
+            continue
+
+        for score in scores:
+            name = (score.get("name") or "").lower()
+            value = score.get("value")
+            if value is None:
+                continue
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if name == "hallucination" and value > 0.5:
+                hallucinated += 1
+                scored += 1
+                break  # counted once per trace
+            elif name == "factuality" and value < 0.5:
+                hallucinated += 1
+                scored += 1
+                break
+            elif name in ("hallucination", "factuality"):
+                scored += 1
+                break
+
+    rate = hallucinated / scored if scored > 0 else 0.0
+    return {
+        "hallucination_rate": round(rate, 4),
+        "hallucinated_traces": hallucinated,
+        "scored_traces": scored,
+        "traces_analyzed": len(traces),
+    }
+
+
 def compute_avg_latency(traces: list) -> dict:
     """
     Compute average and p95 trace latency from Langfuse trace metadata.
@@ -293,6 +372,7 @@ def main():
     max_latency_ms = float(os.getenv("MAX_LATENCY_MS", "5000"))
     stable_version = os.getenv("STABLE_VERSION", "")
     max_cost_ratio = float(os.getenv("MAX_COST_RATIO", "2.0"))
+    max_hallucination_rate = float(os.getenv("MAX_HALLUCINATION_RATE", "0.10"))
     time_window_minutes = int(os.getenv("TIME_WINDOW_MINUTES", "10"))
     min_traces = int(os.getenv("MIN_TRACES", "5"))
 
@@ -445,9 +525,43 @@ def main():
         print(json.dumps(result))
         sys.exit(0 if passed else 1)
 
+    elif metric == "hallucination_rate":
+        log(f"--- Computing Hallucination Rate ---")
+        log(f"Max allowed hallucination rate: {max_hallucination_rate:.1%}")
+        log("Scoring source: Langfuse Scores with name 'hallucination' or 'factuality'")
+        metrics_data = compute_hallucination_rate(host, auth_header, traces)
+        log(f"  Traces scored: {metrics_data['scored_traces']}/{metrics_data['traces_analyzed']}")
+        log(f"  Hallucinated: {metrics_data['hallucinated_traces']}")
+
+        if metrics_data["scored_traces"] == 0:
+            log("RESULT: INCONCLUSIVE — No hallucination/factuality scores found. "
+                "Run an eval pipeline to score traces before using this metric.")
+            result = {
+                "passed": True,
+                "inconclusive": True,
+                "reason": "no_hallucination_scores_found",
+                **metrics_data,
+            }
+            print(json.dumps(result))
+            sys.exit(0)
+
+        passed = metrics_data["hallucination_rate"] <= max_hallucination_rate
+        result = {
+            "passed": passed,
+            "metric": "hallucination_rate",
+            "threshold": max_hallucination_rate,
+            **metrics_data,
+        }
+        if passed:
+            log(f"RESULT: PASS — {metrics_data['hallucination_rate']:.1%} <= {max_hallucination_rate:.1%}")
+        else:
+            log(f"RESULT: FAIL — {metrics_data['hallucination_rate']:.1%} > {max_hallucination_rate:.1%}")
+        print(json.dumps(result))
+        sys.exit(0 if passed else 1)
+
     else:
         log(f"RESULT: FAIL — Unknown metric '{metric}'. "
-            f"Supported: tool_success_rate | avg_latency | token_cost_ratio")
+            f"Supported: tool_success_rate | avg_latency | token_cost_ratio | hallucination_rate")
         print(json.dumps({"passed": False, "reason": f"unknown_metric: {metric}"}))
         sys.exit(1)
 

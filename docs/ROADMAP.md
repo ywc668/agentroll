@@ -17,11 +17,7 @@ All Sprint 4 items delivered.
 
 ---
 
-## Sprint 5 — Ecosystem Expansion
-
-- MCP tool lifecycle management: version-gate tool dependency upgrades
-- Multi-agent coordination (A2A): AgentDeployment inter-dependencies
-- `agent-langfuse-check.yaml` expanded with hallucination rate signal
+## Sprint 5 — Ecosystem Expansion (complete)
 
 ---
 
@@ -53,3 +49,6 @@ All Sprint 4 items delivered.
 | 4 | Multi-framework examples: `examples/{langgraph-agent,crewai-agent,autogen-agent}` — each with agent.py, Dockerfile, requirements.txt, and AgentDeployment k8s manifest |
 | 4 | KEDA ScaledObject generation: `reconcileScaledObject()` creates KEDA ScaledObjects for redis/rabbitmq/sqs when `spec.scaling.queueRef` is set; gracefully skips if KEDA not installed |
 | 4 | RBAC hardening: `reconcileServiceAccount()` auto-creates a dedicated SA per agent when `spec.serviceAccountName` is unset; KEDA + ServiceAccount RBAC markers added |
+| 5 | MCP tool lifecycle: `reconcileToolDependencies()` resolves MCP endpoints via K8s Service discovery, validates semver constraints from `spec.agentMeta.toolDependencies`, injects `MCP_TOOL_<NAME>_ENDPOINT` env vars, blocks rollout on unmet constraints |
+| 5 | A2A multi-agent coordination: `spec.dependsOn []string` field + `checkAgentDependencies()` in controller; requeues every 30s until all dependency AgentDeployments reach Stable phase |
+| 5 | Hallucination rate signal: `hallucination_rate` metric in `langfuse_metrics.py` reads Langfuse Scores (`hallucination` > 0.5 OR `factuality` < 0.5 flags a trace); `agent-langfuse-check.yaml` exposes `max-hallucination-rate` arg (default 0.10) |

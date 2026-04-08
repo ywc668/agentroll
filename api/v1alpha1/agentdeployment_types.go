@@ -50,6 +50,13 @@ type AgentDeploymentSpec struct {
 	// +optional
 	// +kubebuilder:default=1
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// DependsOn lists names of other AgentDeployments (in the same namespace) that
+	// must be in Stable phase before this agent's canary is allowed to progress.
+	// Use this for A2A (agent-to-agent) coordination: if agent B calls agent A,
+	// declare A in B's DependsOn so a degraded A blocks B's canary promotion.
+	// +optional
+	DependsOn []string `json:"dependsOn,omitempty"`
 }
 
 // AgentContainerSpec defines the container configuration for the agent.
