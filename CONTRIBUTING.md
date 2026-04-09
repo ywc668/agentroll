@@ -45,10 +45,10 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.25+
 - kubectl
 - A Kubernetes cluster (minikube, kind, or remote)
-- Argo Rollouts installed on the cluster
+- [Argo Rollouts](https://argoproj.github.io/argo-rollouts/installation/) installed on the cluster
 - Docker (for building images)
 
 ### Getting Started

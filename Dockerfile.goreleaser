@@ -1,0 +1,8 @@
+# Goreleaser uses a pre-compiled binary — no source compilation needed.
+# The main Dockerfile is used for local builds (make docker-build).
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY manager .
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]
