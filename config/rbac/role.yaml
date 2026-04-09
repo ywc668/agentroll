@@ -19,6 +19,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - agentroll.dev
   resources:
   - agentdeployments
@@ -47,7 +54,6 @@ rules:
 - apiGroups:
   - apps
   resources:
-  - deployments
   - replicasets
   verbs:
   - get
@@ -58,6 +64,18 @@ rules:
   resources:
   - analysistemplates
   - rollouts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
   verbs:
   - create
   - delete

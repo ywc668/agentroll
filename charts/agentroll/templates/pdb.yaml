@@ -1,0 +1,19 @@
+{{- if .Values.operator.podDisruptionBudget.enabled -}}
+# PodDisruptionBudget ensures at least one controller replica stays available
+# during node drains or voluntary disruptions.  Critical for maintaining
+# availability during a canary rollout — if the controller goes down mid-rollout,
+# the Argo Rollout is left in an indeterminate state.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agentroll.fullname" . }}-pdb
+  namespace: {{ include "agentroll.namespace" . }}
+  labels:
+    {{- include "agentroll.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.operator.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      {{- include "agentroll.selectorLabels" . | nindent 6 }}
+{{- end }}

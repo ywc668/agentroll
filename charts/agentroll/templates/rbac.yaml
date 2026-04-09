@@ -1,5 +1,5 @@
-# ClusterRole for the AgentRoll operator
-# Permissions match the +kubebuilder:rbac annotations in the controller
+# ClusterRole for the AgentRoll operator.
+# Permissions are kept least-privilege: only exact verbs needed per resource group.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "agentroll.labels" . | nindent 4 }}
 rules:
-  # AgentDeployment CRD management
+  # ── AgentDeployment CRD ───────────────────────────────────────────────────
   - apiGroups: ["agentroll.dev"]
     resources: ["agentdeployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -17,28 +17,46 @@ rules:
   - apiGroups: ["agentroll.dev"]
     resources: ["agentdeployments/finalizers"]
     verbs: ["update"]
-  # Argo Rollouts resources
+
+  # ── Argo Rollouts ─────────────────────────────────────────────────────────
   - apiGroups: ["argoproj.io"]
     resources: ["rollouts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["argoproj.io"]
     resources: ["analysistemplates"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Kubernetes Services
+
+  # ── Core Kubernetes resources ─────────────────────────────────────────────
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Leader election
+  - apiGroups: [""]
+    resources: ["configmaps"]           # OTel collector ConfigMap
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]      # per-agent SA auto-creation
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]               # Kubernetes Events (phase changes, errors)
+    verbs: ["create", "patch"]
+
+  # ── apps (read-only — stable ReplicaSet version tracking) ─────────────────
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+
+  # ── KEDA (optional — graceful no-op when KEDA not installed) ──────────────
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # ── Leader election ───────────────────────────────────────────────────────
   {{- if .Values.operator.leaderElection.enabled }}
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["create", "patch"]
   {{- end }}
 ---
-# ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:

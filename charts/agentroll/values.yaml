@@ -40,6 +40,12 @@ operator:
   healthProbe:
     port: 8081
 
+  # PodDisruptionBudget — keeps at least one controller pod available during
+  # node drains. Strongly recommended for production (requires replicas >= 2).
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
 # Namespace to install the operator into
 namespace: agentroll-system
 

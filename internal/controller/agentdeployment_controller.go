@@ -27,6 +27,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -34,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -59,7 +61,8 @@ const agentDeploymentFinalizer = "agentroll.dev/finalizer"
 // AgentDeploymentReconciler reconciles a AgentDeployment object
 type AgentDeploymentReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
@@ -70,9 +73,10 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 
 func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
@@ -117,23 +121,31 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	requeue, err := r.checkAgentDependencies(ctx, agentDeploy)
 	if err != nil {
 		log.Error(err, "failed to check agent dependencies")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to check agent dependencies: %v", err))
 		return ctrl.Result{}, err
 	}
 	if requeue {
 		log.Info("Agent dependencies not yet stable — requeueing",
 			"name", agentDeploy.Name, "dependsOn", agentDeploy.Spec.DependsOn)
+		r.Recorder.Eventf(agentDeploy, corev1.EventTypeNormal, "DependencyNotReady",
+			"waiting for dependencies to reach Stable phase: %v", agentDeploy.Spec.DependsOn)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Step 3: Reconcile AnalysisTemplate
 	if err := r.reconcileAnalysisTemplate(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile AnalysisTemplate")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to reconcile AnalysisTemplate: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	// Step 3.5: Reconcile OTel ConfigMap (if enabled)
 	if err := r.reconcileOTelConfig(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile OTel ConfigMap")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to reconcile OTel ConfigMap: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -141,6 +153,8 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Injects MCP_TOOL_<NAME>_ENDPOINT env vars and blocks on unsatisfied semver constraints.
 	if err := r.reconcileToolDependencies(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile tool dependencies")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ToolConstraintFailed",
+			fmt.Sprintf("MCP tool dependency error: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -149,18 +163,24 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// This provides pod-level isolation: agents don't inherit default SA permissions.
 	if err := r.reconcileServiceAccount(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile ServiceAccount")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to reconcile ServiceAccount: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	// Step 4: Reconcile Argo Rollout
 	if err := r.reconcileRollout(ctx, agentDeploy, compositeVersion); err != nil {
 		log.Error(err, "failed to reconcile Rollout")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to reconcile Rollout: %v", err))
 		return ctrl.Result{}, err
 	}
 
 	// Step 5: Reconcile Service
 	if err := r.reconcileService(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile Service")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to reconcile Service: %v", err))
 		return ctrl.Result{}, err
 	}
 
@@ -168,13 +188,19 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Skipped gracefully when KEDA is not installed in the cluster.
 	if err := r.reconcileScaledObject(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile ScaledObject")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ReconcileError",
+			fmt.Sprintf("failed to reconcile ScaledObject: %v", err))
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Update Status
+	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.
+	prevPhase := agentDeploy.Status.Phase
 	if err := r.updateStatus(ctx, agentDeploy, compositeVersion); err != nil {
 		log.Error(err, "failed to update status")
 		return ctrl.Result{}, err
+	}
+	if agentDeploy.Status.Phase != prevPhase {
+		r.emitPhaseEvent(agentDeploy)
 	}
 
 	log.Info("Successfully reconciled AgentDeployment", "name", agentDeploy.Name)
@@ -216,6 +242,8 @@ func (r *AgentDeploymentReconciler) handleDeletion(
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
 
+	r.Recorder.Event(agentDeploy, corev1.EventTypeNormal, "Finalized",
+		"owned Rollout deleted and finalizer removed; AgentDeployment deletion proceeding")
 	log.Info("Finalizer removed, AgentDeployment deletion proceeding", "name", agentDeploy.Name)
 	return ctrl.Result{}, nil
 }
@@ -881,7 +909,86 @@ func (r *AgentDeploymentReconciler) updateStatus(
 
 	agentDeploy.Status.ObservedGeneration = agentDeploy.Generation
 
+	// Set standard status conditions so tooling (ArgoCD, Flux, kubectl wait) can gate on them.
+	r.setStatusConditions(agentDeploy)
+
 	return r.Status().Update(ctx, agentDeploy)
+}
+
+// setStatusConditions populates the three standard conditions on the AgentDeployment status:
+//   - Available:   True when the agent is Stable and serving traffic normally.
+//   - Progressing: True while a canary rollout is in flight.
+//   - Degraded:    True when the agent has failed analysis or is rolling back.
+func (r *AgentDeploymentReconciler) setStatusConditions(agentDeploy *agentrollv1alpha1.AgentDeployment) {
+	phase := agentDeploy.Status.Phase
+	gen := agentDeploy.Generation
+
+	var available, progressing, degraded metav1.ConditionStatus
+	var availableReason, progressingReason, degradedReason string
+	var availableMsg, progressingMsg, degradedMsg string
+
+	switch phase {
+	case agentrollv1alpha1.PhaseStable:
+		available, availableReason, availableMsg = metav1.ConditionTrue, "Stable",
+			fmt.Sprintf("agent is stable at version %s", agentDeploy.Status.StableVersion)
+		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, "Stable", "no rollout in progress"
+		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, "Stable", "agent is healthy"
+
+	case agentrollv1alpha1.PhaseProgressing:
+		available, availableReason, availableMsg = metav1.ConditionFalse, "Progressing",
+			fmt.Sprintf("canary rollout in progress at %d%% weight", agentDeploy.Status.CanaryWeight)
+		progressing, progressingReason, progressingMsg = metav1.ConditionTrue, "CanaryInProgress",
+			fmt.Sprintf("canary rollout in progress at %d%% weight", agentDeploy.Status.CanaryWeight)
+		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, "Progressing", "no degradation detected"
+
+	case agentrollv1alpha1.PhaseDegraded:
+		available, availableReason, availableMsg = metav1.ConditionFalse, "Degraded", "agent analysis failed"
+		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, "Degraded", "rollout halted due to degradation"
+		degraded, degradedReason, degradedMsg = metav1.ConditionTrue, "AnalysisFailed", "canary analysis failed; manual intervention may be required"
+
+	case agentrollv1alpha1.PhaseRollingBack:
+		available, availableReason, availableMsg = metav1.ConditionFalse, "RollingBack", "rolling back to previous stable version"
+		progressing, progressingReason, progressingMsg = metav1.ConditionTrue, "RollingBack", "rollback in progress"
+		degraded, degradedReason, degradedMsg = metav1.ConditionTrue, "RollingBack", "canary rejected; rollback in progress"
+
+	default: // Pending or unknown
+		available, availableReason, availableMsg = metav1.ConditionFalse, "Pending", "agent deployment is initializing"
+		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, "Pending", "waiting for initial rollout"
+		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, "Pending", "no degradation detected"
+	}
+
+	apimeta.SetStatusCondition(&agentDeploy.Status.Conditions, metav1.Condition{
+		Type: "Available", Status: available,
+		ObservedGeneration: gen, Reason: availableReason, Message: availableMsg,
+	})
+	apimeta.SetStatusCondition(&agentDeploy.Status.Conditions, metav1.Condition{
+		Type: "Progressing", Status: progressing,
+		ObservedGeneration: gen, Reason: progressingReason, Message: progressingMsg,
+	})
+	apimeta.SetStatusCondition(&agentDeploy.Status.Conditions, metav1.Condition{
+		Type: "Degraded", Status: degraded,
+		ObservedGeneration: gen, Reason: degradedReason, Message: degradedMsg,
+	})
+}
+
+// emitPhaseEvent emits a Kubernetes Event describing the phase the AgentDeployment
+// has just transitioned into.  Called whenever updateStatus detects a phase change.
+func (r *AgentDeploymentReconciler) emitPhaseEvent(agentDeploy *agentrollv1alpha1.AgentDeployment) {
+	phase := agentDeploy.Status.Phase
+	switch phase {
+	case agentrollv1alpha1.PhaseStable:
+		r.Recorder.Eventf(agentDeploy, corev1.EventTypeNormal, "RolloutCompleted",
+			"agent reached Stable phase at version %s", agentDeploy.Status.StableVersion)
+	case agentrollv1alpha1.PhaseProgressing:
+		r.Recorder.Eventf(agentDeploy, corev1.EventTypeNormal, "RolloutProgressing",
+			"canary rollout started, current weight %d%%", agentDeploy.Status.CanaryWeight)
+	case agentrollv1alpha1.PhaseDegraded:
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "RolloutDegraded",
+			"canary analysis failed; agent entered Degraded phase")
+	case agentrollv1alpha1.PhaseRollingBack:
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "RollingBack",
+			"canary rejected; rolling back to previous stable version")
+	}
 }
 
 // stableRSCompositeVersion finds the stable ReplicaSet (matched by pod-template-hash)

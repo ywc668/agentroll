@@ -25,12 +25,23 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
 )
+
+// newTestReconciler returns an AgentDeploymentReconciler wired with a buffered
+// fake event recorder so tests don't panic on nil Recorder.
+func newTestReconciler() *AgentDeploymentReconciler {
+	return &AgentDeploymentReconciler{
+		Client:   k8sClient,
+		Scheme:   k8sClient.Scheme(),
+		Recorder: record.NewFakeRecorder(100),
+	}
+}
 
 var _ = Describe("AgentDeployment Controller", func() {
 	Context("When reconciling a resource", func() {
@@ -83,10 +94,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 
 			// Run the reconciler to process the finalizer so the object is actually deleted
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -94,10 +102,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -153,10 +158,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 
 			// Run the reconciler to process the finalizer (which deletes the Rollout)
 			// before we attempt manual cleanup of other generated resources.
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 
 			// Clean up any remaining generated resources (template may not be owned)
@@ -168,10 +170,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 		})
 
 		It("should create an Argo Rollout with composite version labels", func() {
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -195,10 +194,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 		})
 
 		It("should create a managed AnalysisTemplate for agent-quality-check", func() {
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -216,10 +212,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 		})
 
 		It("should create a Service when the container has ports", func() {
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -231,10 +224,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 		})
 
 		It("should update AgentDeployment status phase after reconciliation", func() {
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -249,10 +239,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 			// This test guards against the bug where StableVersion was always set from
 			// compositeVersion (current spec), which caused incorrect STABLE output when
 			// a canary was rejected — the stable RS is still the old version.
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -313,15 +300,12 @@ var _ = Describe("AgentDeployment Controller", func() {
 			resource := &agentrollv1alpha1.AgentDeployment{}
 			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-			controllerReconciler := &AgentDeploymentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := newTestReconciler()
 			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		})
 
 		It("should reconcile without error when KEDA ScaledObject CRD is present", func() {
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			// ScaledObject CRD is registered in envtest (test/crds/scaledobject-crd.yaml)
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
@@ -361,15 +345,12 @@ var _ = Describe("AgentDeployment Controller", func() {
 			resource := &agentrollv1alpha1.AgentDeployment{}
 			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-			controllerReconciler := &AgentDeploymentReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			controllerReconciler := newTestReconciler()
 			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		})
 
 		It("should auto-create a ServiceAccount named after the agent", func() {
-			controllerReconciler := &AgentDeploymentReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
+			controllerReconciler := newTestReconciler()
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
