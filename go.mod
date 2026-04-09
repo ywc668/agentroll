@@ -1,8 +1,9 @@
 module github.com/ywc668/agentroll
 
-go 1.25.3
+go 1.25.9
 
 require (
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/argoproj/argo-rollouts v1.9.0
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
@@ -14,7 +15,6 @@ require (
 
 require (
 	cel.dev/expr v0.24.0 // indirect
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect

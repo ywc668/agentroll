@@ -12,7 +12,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-
 // newTestAD returns a minimal valid AgentDeployment and applies any mutations.
 func newTestAD(name string, mutate func(*AgentDeploymentSpec)) *AgentDeployment {
 	ad := &AgentDeployment{

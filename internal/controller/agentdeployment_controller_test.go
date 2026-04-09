@@ -433,7 +433,7 @@ var _ = Describe("AgentDeployment Controller", func() {
 
 			By("verifying agent container has OTEL env var")
 			containers := rollout.Spec.Template.Spec.Containers
-			Expect(len(containers)).To(BeNumerically(">=", 1))
+			Expect(containers).ToNot(BeEmpty())
 			agentContainer := containers[0]
 			foundOTelEnv := false
 			for _, env := range agentContainer.Env {

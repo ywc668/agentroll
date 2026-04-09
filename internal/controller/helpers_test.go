@@ -176,16 +176,14 @@ func TestBuildLabels_NoMeta(t *testing.T) {
 func TestResourcesOrDefault_WithValue(t *testing.T) {
 	req := corev1.ResourceRequirements{}
 	got := resourcesOrDefault(&req)
-	if &got == nil {
-		t.Error("expected non-nil result")
-	}
+	// got is always a struct value (non-pointer) — just verify no panic and fields
+	_ = got
 }
 
 func TestResourcesOrDefault_Nil(t *testing.T) {
+	// nil input should return defaults without panic
 	got := resourcesOrDefault(nil)
-	if got.Requests == nil && got.Limits == nil {
-		// defaults are set — just verify no panic
-	}
+	_ = got // defaults populated — just verify no panic
 }
 
 // ── buildPodSpec ────────────────────────────────────────────────────────────
@@ -336,11 +334,7 @@ func (e *fakeError) Error() string { return e.msg }
 // ── buildKEDATrigger ────────────────────────────────────────────────────────
 
 func TestBuildKEDATrigger_Redis(t *testing.T) {
-	qr := &agentrollv1alpha1.QueueReference{
-		Provider:  "redis",
-		Address:   "redis.default.svc:6379",
-		QueueName: "tasks",
-	}
+	qr := &agentrollv1alpha1.QueueReference{Provider: "redis", Address: "redis:6379", QueueName: "tasks"}
 	trigger, err := buildKEDATrigger(qr, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -351,11 +345,7 @@ func TestBuildKEDATrigger_Redis(t *testing.T) {
 }
 
 func TestBuildKEDATrigger_RabbitMQ(t *testing.T) {
-	qr := &agentrollv1alpha1.QueueReference{
-		Provider:  "rabbitmq",
-		Address:   "amqp://rabbit:5672",
-		QueueName: "tasks",
-	}
+	qr := &agentrollv1alpha1.QueueReference{Provider: "rabbitmq", Address: "amqp://rabbit:5672", QueueName: "tasks"}
 	trigger, err := buildKEDATrigger(qr, 10)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -366,11 +356,7 @@ func TestBuildKEDATrigger_RabbitMQ(t *testing.T) {
 }
 
 func TestBuildKEDATrigger_SQS(t *testing.T) {
-	qr := &agentrollv1alpha1.QueueReference{
-		Provider:  "sqs",
-		Address:   "https://sqs.us-east-1.amazonaws.com/123456/tasks",
-		QueueName: "tasks",
-	}
+	qr := &agentrollv1alpha1.QueueReference{Provider: "sqs", Address: "https://sqs.us-east-1.amazonaws.com/123/q", QueueName: "tasks"}
 	trigger, err := buildKEDATrigger(qr, 20)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

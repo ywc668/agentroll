@@ -59,6 +59,16 @@ const defaultLangfuseMetricsImage = "ghcr.io/agentroll/langfuse-metrics:v1"
 // orphaned Argo Rollouts before the AgentDeployment object is removed.
 const agentDeploymentFinalizer = "agentroll.dev/finalizer"
 
+// Repeated string constants — extracted to satisfy goconst.
+const (
+	defaultLangfuseSecret   = "langfuse-credentials"
+	defaultLangfuseHost     = "https://cloud.langfuse.com"
+	defaultImageTag         = "latest"
+	conditionReasonStable   = "Stable"
+	conditionReasonRollback = "RollingBack"
+	conditionReasonPending  = "Pending"
+)
+
 // AgentDeploymentReconciler reconciles a AgentDeployment object
 type AgentDeploymentReconciler struct {
 	client.Client
@@ -374,7 +384,7 @@ func (r *AgentDeploymentReconciler) reconcileRollout(
 		replicas = *agentDeploy.Spec.Replicas
 	}
 
-	labels := buildLabels(agentDeploy, compositeVersion)
+	podLabels := buildLabels(agentDeploy, compositeVersion)
 	selectorLabels := map[string]string{
 		"app.kubernetes.io/name": agentDeploy.Name,
 	}
@@ -387,7 +397,7 @@ func (r *AgentDeploymentReconciler) reconcileRollout(
 	}
 
 	result, err := controllerutil.CreateOrUpdate(ctx, r.Client, rollout, func() error {
-		rollout.Labels = labels
+		rollout.Labels = podLabels
 
 		rollout.Spec = rolloutsv1alpha1.RolloutSpec{
 			Replicas: &replicas,
@@ -396,7 +406,7 @@ func (r *AgentDeploymentReconciler) reconcileRollout(
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+					Labels: podLabels,
 				},
 				Spec: buildPodSpec(agentDeploy),
 			},
@@ -548,7 +558,7 @@ func langfuseSecretName(agentDeploy *agentrollv1alpha1.AgentDeployment) string {
 		agentDeploy.Spec.Observability.Langfuse.SecretRef != "" {
 		return agentDeploy.Spec.Observability.Langfuse.SecretRef
 	}
-	return "langfuse-credentials"
+	return defaultLangfuseSecret
 }
 
 // langfuseHost returns the Langfuse server URL from spec, or cloud.langfuse.com.
@@ -558,7 +568,7 @@ func langfuseHost(agentDeploy *agentrollv1alpha1.AgentDeployment) string {
 		agentDeploy.Spec.Observability.Langfuse.Endpoint != "" {
 		return agentDeploy.Spec.Observability.Langfuse.Endpoint
 	}
-	return "https://cloud.langfuse.com"
+	return defaultLangfuseHost
 }
 
 func parseDuration(d string) *intstr.IntOrString {
@@ -689,8 +699,8 @@ func qualityCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
 // Runs langfuse_metrics.py with METRIC=token_cost_ratio to compare canary vs stable
 // token cost.  Injected automatically when spec.rollback.onCostSpike is configured.
 func costCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
-	defaultLangfuseHost := "https://cloud.langfuse.com"
-	defaultLangfuseSecret := "langfuse-credentials"
+	localLangfuseHost := defaultLangfuseHost
+	localLangfuseSecret := defaultLangfuseSecret
 	defaultMaxCostRatio := "2.0"
 	defaultTimeWindow := "10"
 	defaultMinTraces := "5"
@@ -701,8 +711,8 @@ func costCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
 			{Name: "canary-version"},
 			{Name: "stable-version"},
 			{Name: "max-cost-ratio", Value: &defaultMaxCostRatio},
-			{Name: "langfuse-host", Value: &defaultLangfuseHost},
-			{Name: "langfuse-secret-name", Value: &defaultLangfuseSecret},
+			{Name: "langfuse-host", Value: &localLangfuseHost},
+			{Name: "langfuse-secret-name", Value: &localLangfuseSecret},
 			{Name: "time-window-minutes", Value: &defaultTimeWindow},
 			{Name: "min-traces", Value: &defaultMinTraces},
 		},
@@ -930,10 +940,10 @@ func (r *AgentDeploymentReconciler) setStatusConditions(agentDeploy *agentrollv1
 
 	switch phase {
 	case agentrollv1alpha1.PhaseStable:
-		available, availableReason, availableMsg = metav1.ConditionTrue, "Stable",
+		available, availableReason, availableMsg = metav1.ConditionTrue, conditionReasonStable,
 			fmt.Sprintf("agent is stable at version %s", agentDeploy.Status.StableVersion)
-		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, "Stable", "no rollout in progress"
-		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, "Stable", "agent is healthy"
+		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, conditionReasonStable, "no rollout in progress"
+		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, conditionReasonStable, "agent is healthy"
 
 	case agentrollv1alpha1.PhaseProgressing:
 		available, availableReason, availableMsg = metav1.ConditionFalse, "Progressing",
@@ -948,14 +958,14 @@ func (r *AgentDeploymentReconciler) setStatusConditions(agentDeploy *agentrollv1
 		degraded, degradedReason, degradedMsg = metav1.ConditionTrue, "AnalysisFailed", "canary analysis failed; manual intervention may be required"
 
 	case agentrollv1alpha1.PhaseRollingBack:
-		available, availableReason, availableMsg = metav1.ConditionFalse, "RollingBack", "rolling back to previous stable version"
-		progressing, progressingReason, progressingMsg = metav1.ConditionTrue, "RollingBack", "rollback in progress"
-		degraded, degradedReason, degradedMsg = metav1.ConditionTrue, "RollingBack", "canary rejected; rollback in progress"
+		available, availableReason, availableMsg = metav1.ConditionFalse, conditionReasonRollback, "rolling back to previous stable version"
+		progressing, progressingReason, progressingMsg = metav1.ConditionTrue, conditionReasonRollback, "rollback in progress"
+		degraded, degradedReason, degradedMsg = metav1.ConditionTrue, conditionReasonRollback, "canary rejected; rollback in progress"
 
 	default: // Pending or unknown
-		available, availableReason, availableMsg = metav1.ConditionFalse, "Pending", "agent deployment is initializing"
-		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, "Pending", "waiting for initial rollout"
-		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, "Pending", "no degradation detected"
+		available, availableReason, availableMsg = metav1.ConditionFalse, conditionReasonPending, "agent deployment is initializing"
+		progressing, progressingReason, progressingMsg = metav1.ConditionFalse, conditionReasonPending, "waiting for initial rollout"
+		degraded, degradedReason, degradedMsg = metav1.ConditionFalse, conditionReasonPending, "no degradation detected"
 	}
 
 	apimeta.SetStatusCondition(&agentDeploy.Status.Conditions, metav1.Condition{
@@ -1051,18 +1061,18 @@ func mapRolloutPhase(rollout *rolloutsv1alpha1.Rollout) agentrollv1alpha1.AgentD
 // ============================================================
 
 func buildLabels(agentDeploy *agentrollv1alpha1.AgentDeployment, compositeVersion string) map[string]string {
-	labels := map[string]string{
+	result := map[string]string{
 		"app.kubernetes.io/name":          agentDeploy.Name,
 		"app.kubernetes.io/managed-by":    "agentroll",
 		"agentroll.dev/composite-version": compositeVersion,
 	}
 	if agentDeploy.Spec.AgentMeta.PromptVersion != "" {
-		labels["agentroll.dev/prompt-version"] = agentDeploy.Spec.AgentMeta.PromptVersion
+		result["agentroll.dev/prompt-version"] = agentDeploy.Spec.AgentMeta.PromptVersion
 	}
 	if agentDeploy.Spec.AgentMeta.ModelVersion != "" {
-		labels["agentroll.dev/model-version"] = agentDeploy.Spec.AgentMeta.ModelVersion
+		result["agentroll.dev/model-version"] = agentDeploy.Spec.AgentMeta.ModelVersion
 	}
-	return labels
+	return result
 }
 
 func buildCompositeVersion(agentDeploy *agentrollv1alpha1.AgentDeployment) string {
@@ -1191,7 +1201,7 @@ func extractImageTag(image string) string {
 			break
 		}
 	}
-	return "latest"
+	return defaultImageTag
 }
 
 func resourcesOrDefault(res *corev1.ResourceRequirements) corev1.ResourceRequirements {
@@ -1462,15 +1472,15 @@ func (r *AgentDeploymentReconciler) reconcileScaledObject(
 			"app.kubernetes.io/managed-by": "agentroll",
 		})
 		// ScaledObject spec: targets the Argo Rollout, not a Deployment
-		scaledObject.Object["spec"] = map[string]interface{}{
-			"scaleTargetRef": map[string]interface{}{
+		scaledObject.Object["spec"] = map[string]any{
+			"scaleTargetRef": map[string]any{
 				"apiVersion": "argoproj.io/v1alpha1",
 				"kind":       "Rollout",
 				"name":       agentDeploy.Name,
 			},
 			"minReplicaCount": minReplicas,
 			"maxReplicaCount": maxReplicas,
-			"triggers":        []interface{}{trigger},
+			"triggers":        []any{trigger},
 		}
 		return controllerutil.SetControllerReference(agentDeploy, scaledObject, r.Scheme)
 	})
@@ -1502,35 +1512,35 @@ var scaledObjectGVK = schema.GroupVersionKind{
 
 // buildKEDATrigger constructs the KEDA trigger map for the given queue provider.
 // Supported providers: redis, rabbitmq, sqs (aws-sqs-queue).
-func buildKEDATrigger(queueRef *agentrollv1alpha1.QueueReference, targetValue int32) (map[string]interface{}, error) {
+func buildKEDATrigger(queueRef *agentrollv1alpha1.QueueReference, targetValue int32) (map[string]any, error) {
 	switch queueRef.Provider {
 	case "redis":
-		return map[string]interface{}{
+		return map[string]any{
 			"type": "redis",
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"address":    queueRef.Address,
 				"listName":   queueRef.QueueName,
 				"listLength": fmt.Sprintf("%d", targetValue),
 			},
 		}, nil
 	case "rabbitmq":
-		return map[string]interface{}{
+		return map[string]any{
 			"type": "rabbitmq",
-			"metadata": map[string]interface{}{
-				"host":          queueRef.Address,
-				"queueName":     queueRef.QueueName,
-				"queueLength":   fmt.Sprintf("%d", targetValue),
-				"protocol":      "amqp",
-				"mode":          "QueueLength",
+			"metadata": map[string]any{
+				"host":        queueRef.Address,
+				"queueName":   queueRef.QueueName,
+				"queueLength": fmt.Sprintf("%d", targetValue),
+				"protocol":    "amqp",
+				"mode":        "QueueLength",
 			},
 		}, nil
 	case "sqs":
-		return map[string]interface{}{
+		return map[string]any{
 			"type": "aws-sqs-queue",
-			"metadata": map[string]interface{}{
-				"queueURL":            queueRef.Address,
-				"queueLength":         fmt.Sprintf("%d", targetValue),
-				"awsRegion":           "us-east-1", // users can override via env in the KEDA operator
+			"metadata": map[string]any{
+				"queueURL":    queueRef.Address,
+				"queueLength": fmt.Sprintf("%d", targetValue),
+				"awsRegion":   "us-east-1", // users can override via env in the KEDA operator
 			},
 		}, nil
 	default:

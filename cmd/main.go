@@ -60,6 +60,7 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
+	var enableWebhook bool
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -81,6 +82,8 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&enableWebhook, "enable-webhook", false,
+		"If set, the validating webhook server is started. Requires TLS certificates (see --webhook-cert-path).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -181,16 +184,19 @@ func main() {
 	}
 
 	if err := (&controller.AgentDeploymentReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		//nolint:staticcheck // GetEventRecorder returns a different interface type; migrate when adopting new events API
 		Recorder: mgr.GetEventRecorderFor("agentdeployment-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "AgentDeployment")
 		os.Exit(1)
 	}
-	if err := agentrollv1alpha1.SetupAgentDeploymentWebhookWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to set up webhook", "webhook", "AgentDeployment")
-		os.Exit(1)
+	if enableWebhook {
+		if err := agentrollv1alpha1.SetupAgentDeploymentWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to set up webhook", "webhook", "AgentDeployment")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
