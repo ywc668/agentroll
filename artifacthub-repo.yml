@@ -1,0 +1,7 @@
+repositoryID: agentroll
+owners:
+  - name: ywc668
+    email: ywc668@users.noreply.github.com
+ignore:
+  - name: agentroll
+    reason: development

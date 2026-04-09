@@ -1,0 +1,96 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: agentroll-alerts
+  namespace: agentroll-system
+  labels:
+    app.kubernetes.io/name: agentroll
+    app.kubernetes.io/managed-by: agentroll
+    # This label is required for Prometheus Operator to pick up the rule.
+    # Adjust to match your Prometheus Operator's ruleSelector labels.
+    app.kubernetes.io/component: alerting
+spec:
+  groups:
+    # ── Controller health ────────────────────────────────────────────────────
+    - name: agentroll.controller
+      interval: 30s
+      rules:
+        - alert: AgentRollControllerDown
+          expr: |
+            absent(up{job="agentroll-controller-manager-metrics-service"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "AgentRoll controller is down"
+            description: "The AgentRoll controller-manager has been unreachable for 5 minutes. Agent canary rollouts are paused."
+
+        - alert: AgentRollReconcileErrors
+          expr: |
+            rate(controller_runtime_reconcile_errors_total{controller="agentdeployment"}[5m]) > 0.1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "AgentRoll reconcile error rate elevated"
+            description: "More than 0.1 reconcile errors/second for 10 minutes. Check controller logs for details."
+
+        - alert: AgentRollReconcileQueueDepth
+          expr: |
+            controller_runtime_reconcile_queue_length{controller="agentdeployment"} > 50
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "AgentRoll reconcile queue is growing"
+            description: "The AgentDeployment reconcile queue has more than 50 pending items for 5 minutes. Controller may be overwhelmed."
+
+        - alert: AgentRollLeaderElectionLost
+          expr: |
+            increase(leader_election_master_status{name="9b586498.agentroll.dev"}[5m]) < 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "AgentRoll lost leader election"
+            description: "The AgentRoll controller lost its lease. A new leader should be elected within 30 seconds."
+
+    # ── Agent rollout health ─────────────────────────────────────────────────
+    - name: agentroll.rollouts
+      interval: 60s
+      rules:
+        - alert: AgentDeploymentDegraded
+          expr: |
+            count by (namespace, agentdeployment) (
+              agentroll_agentdeployment_phase{phase="Degraded"}
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "AgentDeployment {{ $labels.agentdeployment }} is Degraded"
+            description: "AgentDeployment {{ $labels.namespace }}/{{ $labels.agentdeployment }} has been in Degraded phase for 5 minutes. Canary analysis may have failed."
+
+        - alert: AgentDeploymentRollingBack
+          expr: |
+            count by (namespace, agentdeployment) (
+              agentroll_agentdeployment_phase{phase="RollingBack"}
+            ) > 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "AgentDeployment {{ $labels.agentdeployment }} is rolling back"
+            description: "AgentDeployment {{ $labels.namespace }}/{{ $labels.agentdeployment }} has been in RollingBack phase for 2 minutes. A canary was rejected."
+
+        - alert: AgentDeploymentStuckProgressing
+          expr: |
+            count by (namespace, agentdeployment) (
+              agentroll_agentdeployment_phase{phase="Progressing"}
+            ) > 0
+          for: 60m
+          labels:
+            severity: warning
+          annotations:
+            summary: "AgentDeployment {{ $labels.agentdeployment }} stuck in Progressing"
+            description: "AgentDeployment {{ $labels.namespace }}/{{ $labels.agentdeployment }} has been Progressing for over 60 minutes. Manual promotion or abort may be needed."

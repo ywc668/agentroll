@@ -181,6 +181,15 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
+# upgrade-crds applies the latest CRDs to the cluster using server-side apply.
+# Safe to run on live clusters: SSA merges CRD changes without removing existing fields.
+# Always run `make manifests generate` first to regenerate CRDs from types.go.
+.PHONY: upgrade-crds
+upgrade-crds: manifests kustomize ## Apply CRD upgrades to a live cluster (safe, uses server-side apply).
+	@echo "Upgrading AgentRoll CRDs (server-side apply)..."
+	"$(KUSTOMIZE)" build config/crd | "$(KUBECTL)" apply --server-side --force-conflicts -f -
+	@echo "CRDs upgraded. Verify with: kubectl get crd agentdeployments.agentroll.dev -o yaml"
+
 ##@ Dependencies
 
 ## Location to install dependencies to

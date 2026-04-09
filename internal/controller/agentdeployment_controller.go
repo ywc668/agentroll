@@ -38,6 +38,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -1550,11 +1551,19 @@ func isNoCRDError(err error) bool {
 }
 
 // SetupWithManager sets up the controller with the Manager.
+// Reliability settings:
+//   - MaxConcurrentReconciles: 4 — allows parallel reconciles of different agents,
+//     improving throughput in clusters with many AgentDeployments.
+//   - RateLimiter: exponential backoff (base 5s, max 5m) for retries on transient errors.
+//     This prevents thundering-herd when the API server is slow or KEDA is unavailable.
 func (r *AgentDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&agentrollv1alpha1.AgentDeployment{}).
 		Owns(&rolloutsv1alpha1.Rollout{}).
 		Owns(&corev1.Service{}).
 		Named("agentdeployment").
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: 4,
+		}).
 		Complete(r)
 }

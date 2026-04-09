@@ -19,3 +19,14 @@ keywords:
   - mlops
   - llm
 icon: ""
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/signKey: |
+    fingerprint: cosign
+    url: https://github.com/ywc668/agentroll/releases
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://github.com/ywc668/agentroll#readme
+    - name: Source Code
+      url: https://github.com/ywc668/agentroll
+  artifacthub.io/category: integration-delivery

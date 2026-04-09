@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentRoll Helm Chart Values",
+  "type": "object",
+  "properties": {
+    "operator": {
+      "type": "object",
+      "description": "AgentRoll operator deployment configuration",
+      "properties": {
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "description": "Container image repository"
+            },
+            "tag": {
+              "type": "string",
+              "description": "Container image tag"
+            },
+            "pullPolicy": {
+              "type": "string",
+              "enum": ["Always", "IfNotPresent", "Never"],
+              "description": "Image pull policy"
+            }
+          },
+          "required": ["repository", "tag"]
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of operator pod replicas"
+        },
+        "resources": {
+          "type": "object",
+          "description": "Resource requests and limits for the operator pod",
+          "properties": {
+            "limits": {
+              "type": "object",
+              "properties": {
+                "cpu": {"type": "string"},
+                "memory": {"type": "string"}
+              }
+            },
+            "requests": {
+              "type": "object",
+              "properties": {
+                "cpu": {"type": "string"},
+                "memory": {"type": "string"}
+              }
+            }
+          }
+        },
+        "serviceAccount": {
+          "type": "object",
+          "properties": {
+            "create": {
+              "type": "boolean",
+              "description": "Whether to create the ServiceAccount"
+            },
+            "name": {
+              "type": "string",
+              "description": "Name for the operator ServiceAccount"
+            }
+          },
+          "required": ["create"]
+        },
+        "leaderElection": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable leader election (recommended for HA)"
+            }
+          },
+          "required": ["enabled"]
+        },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 65535
+            },
+            "secure": {
+              "type": "boolean",
+              "description": "Serve metrics over HTTPS"
+            }
+          }
+        },
+        "healthProbe": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 65535
+            }
+          }
+        },
+        "podDisruptionBudget": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Create a PodDisruptionBudget for the operator"
+            },
+            "minAvailable": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Minimum number of pods that must remain available during disruptions"
+            }
+          },
+          "required": ["enabled"]
+        }
+      },
+      "required": ["replicas"]
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Namespace to install the operator into",
+      "minLength": 1
+    },
+    "installCRDs": {
+      "type": "boolean",
+      "description": "Whether to install CRDs (set to false if managing CRDs separately)"
+    },
+    "argoRollouts": {
+      "type": "object",
+      "properties": {
+        "skipCheck": {
+          "type": "boolean",
+          "description": "Skip the Argo Rollouts prerequisite check (not recommended for production)"
+        }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "description": "Validating webhook configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the ValidatingWebhookConfiguration (requires cert-manager)"
+        },
+        "failurePolicy": {
+          "type": "string",
+          "enum": ["Fail", "Ignore"],
+          "description": "Webhook failure policy"
+        },
+        "caBundle": {
+          "type": "string",
+          "description": "Base64-encoded CA bundle (used when cert-manager is not available)"
+        },
+        "certManager": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Create cert-manager Issuer + Certificate for webhook TLS"
+            }
+          },
+          "required": ["enabled"]
+        }
+      },
+      "required": ["enabled"]
+    },
+    "analysisTemplates": {
+      "type": "object",
+      "properties": {
+        "namespaces": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Namespaces in which to pre-install the agent-quality-check AnalysisTemplate"
+        }
+      }
+    }
+  },
+  "required": ["namespace", "installCRDs"]
+}

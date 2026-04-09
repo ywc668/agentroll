@@ -365,4 +365,83 @@ var _ = Describe("AgentDeployment Controller", func() {
 			Expect(rollout.Spec.Template.Spec.ServiceAccountName).To(Equal(resourceName))
 		})
 	})
+
+	Context("When reconciling an AgentDeployment with OTel enabled", func() {
+		const resourceName = "otel-test"
+		ctx := context.Background()
+		nn := types.NamespacedName{Name: resourceName, Namespace: "default"}
+
+		BeforeEach(func() {
+			err := k8sClient.Get(ctx, nn, &agentrollv1alpha1.AgentDeployment{})
+			if err != nil && errors.IsNotFound(err) {
+				otelEnabled := true
+				resource := &agentrollv1alpha1.AgentDeployment{
+					ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: "default"},
+					Spec: agentrollv1alpha1.AgentDeploymentSpec{
+						Container: agentrollv1alpha1.AgentContainerSpec{
+							Image: "test-registry/my-agent:v1.0",
+						},
+						AgentMeta: agentrollv1alpha1.AgentMetaSpec{
+							PromptVersion: "p1",
+							ModelVersion:  "claude-sonnet",
+						},
+						Rollout: agentrollv1alpha1.RolloutSpec{
+							Strategy: "canary",
+							Steps:    []agentrollv1alpha1.RolloutStep{{SetWeight: 100}},
+						},
+						Observability: &agentrollv1alpha1.ObservabilitySpec{
+							OpenTelemetry: &agentrollv1alpha1.OTelSpec{
+								Enabled:           otelEnabled,
+								CollectorEndpoint: "otel-collector.monitoring:4317",
+							},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			}
+		})
+
+		AfterEach(func() {
+			resource := &agentrollv1alpha1.AgentDeployment{}
+			Expect(k8sClient.Get(ctx, nn, resource)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			controllerReconciler := newTestReconciler()
+			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		})
+
+		It("should create the OTel ConfigMap when OpenTelemetry is enabled", func() {
+			controllerReconciler := newTestReconciler()
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the OTel ConfigMap was created")
+			cm := &corev1.ConfigMap{}
+			cmNN := types.NamespacedName{Name: resourceName + "-otel-config", Namespace: "default"}
+			Expect(k8sClient.Get(ctx, cmNN, cm)).To(Succeed())
+			Expect(cm.Data).To(HaveKey("config.yaml"))
+			Expect(cm.Data["config.yaml"]).To(ContainSubstring("otlp"))
+			Expect(cm.Labels["app.kubernetes.io/managed-by"]).To(Equal("agentroll"))
+		})
+
+		It("should inject OTel sidecar container into the Rollout pod spec", func() {
+			controllerReconciler := newTestReconciler()
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			rollout := &rolloutsv1alpha1.Rollout{}
+			Expect(k8sClient.Get(ctx, nn, rollout)).To(Succeed())
+
+			By("verifying agent container has OTEL env var")
+			containers := rollout.Spec.Template.Spec.Containers
+			Expect(len(containers)).To(BeNumerically(">=", 1))
+			agentContainer := containers[0]
+			foundOTelEnv := false
+			for _, env := range agentContainer.Env {
+				if env.Name == "OTEL_EXPORTER_OTLP_ENDPOINT" {
+					foundOTelEnv = true
+				}
+			}
+			Expect(foundOTelEnv).To(BeTrue(), "OTEL_EXPORTER_OTLP_ENDPOINT should be injected")
+		})
+	})
 })
