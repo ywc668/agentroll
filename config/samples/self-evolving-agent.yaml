@@ -1,0 +1,93 @@
+# self-evolving-agent.yaml
+#
+# Demonstrates AgentRoll Sprint 7: Self-Evolution Loop.
+#
+# This AgentDeployment:
+#   1. Runs a canary with evaluation gates.
+#   2. On failure, fires the evolution loop:
+#        a. Threshold tuner adjusts quality gate thresholds from historical data.
+#        b. Prompt optimizer reads failing traces, calls Claude, opens a GitHub PR.
+#        c. Model upgrader detects quality plateau, proposes model upgrade via PR.
+#
+# Prerequisites:
+#   - Langfuse running (see docs/langfuse/)
+#   - K8s Secret "llm-api-key" with key API_KEY containing your Anthropic key
+#   - K8s Secret "github-token" with key GITHUB_TOKEN (repo write permission)
+#
+# kubectl apply -f self-evolving-agent.yaml
+# kubectl get agentdeployment self-evolving-agent -o jsonpath='{.status.evolution}'
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: self-evolving-agent
+  namespace: default
+spec:
+  replicas: 2
+
+  container:
+    image: ghcr.io/your-org/your-agent:v1.2.3
+    env:
+      - name: PROMPT_VERSION
+        value: "v3"
+      - name: ANTHROPIC_API_KEY
+        valueFrom:
+          secretKeyRef:
+            name: llm-api-key
+            key: API_KEY
+
+  agentMeta:
+    promptVersion: "v3"
+    modelVersion: "claude-sonnet-4-20250514"
+    modelProvider: "anthropic"
+
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+        analysis:
+          templateRef: agent-quality-check
+      - setWeight: 50
+        pause:
+          duration: "5m"
+      - setWeight: 100
+
+  rollback:
+    onFailedAnalysis: true
+
+  observability:
+    langfuse:
+      endpoint: "http://langfuse.monitoring.svc.cluster.local:3000"
+      secretRef: langfuse-credentials
+
+  # ── Sprint 7: Self-Evolution ───────────────────────────────────────────────
+  evolution:
+    enabled: true
+
+    # Run all three evolution strategies: threshold-tuner, prompt-optimizer,
+    # model-upgrader. Use "threshold-tuner" for a no-LLM-required mode.
+    strategy: all
+
+    # Fire the evolution loop after a canary failure. Use "both" to also run
+    # on a periodic schedule (requires `schedule`).
+    trigger: on-canary-fail
+
+    # Number of consecutive successful canaries with no quality improvement
+    # before the model-upgrader fires. Default: 3.
+    consecutiveCanariesForPlateau: 3
+
+    # LLM configuration for prompt-optimizer and model-upgrader.
+    # The Secret must contain key: API_KEY
+    optimizer:
+      model: claude-sonnet-4-20250514
+      provider: anthropic
+      secretRef: llm-api-key
+
+    # Human-in-the-loop: proposals open a GitHub PR for review instead of
+    # being applied automatically. Comment out to apply directly (use with care).
+    humanApproval:
+      github:
+        owner: your-org
+        repo: your-agent
+        baseBranch: main
+        secretRef: github-token   # Secret must contain key: GITHUB_TOKEN

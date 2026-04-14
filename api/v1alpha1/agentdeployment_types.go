@@ -57,6 +57,13 @@ type AgentDeploymentSpec struct {
 	// declare A in B's DependsOn so a degraded A blocks B's canary promotion.
 	// +optional
 	DependsOn []string `json:"dependsOn,omitempty"`
+
+	// Evolution configures the self-evolution loop for this agent.
+	// When enabled, the controller analyses canary outcomes and proposes or applies
+	// improvements: threshold tuning, prompt optimisation, or model version bumps.
+	// Disabled by default — opt in explicitly.
+	// +optional
+	Evolution *EvolutionSpec `json:"evolution,omitempty"`
 }
 
 // AgentContainerSpec defines the container configuration for the agent.
@@ -302,6 +309,11 @@ type AgentDeploymentStatus struct {
 	// ObservedGeneration is the most recent generation observed by the controller.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Evolution reflects the current state of the self-evolution loop.
+	// Populated only after the evolution controller has completed at least one evaluation.
+	// +optional
+	Evolution *EvolutionStatus `json:"evolution,omitempty"`
 }
 
 // AgentDeploymentPhase represents the lifecycle phase of an agent deployment.
@@ -359,6 +371,137 @@ type AgentDeploymentList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []AgentDeployment `json:"items"`
+}
+
+// ─── Evolution ───────────────────────────────────────────────────────────────
+
+// EvolutionSpec configures the self-evolution loop for an AgentDeployment.
+// The loop fires after each canary (on fail, on a schedule, or both) and runs
+// one or more strategies that analyse outcomes and propose or apply improvements.
+type EvolutionSpec struct {
+	// Enabled controls whether the self-evolution loop is active.
+	// Set to true to opt in; all other fields are ignored when false.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// Strategy selects which evolution strategies to run.
+	//
+	// threshold-tuner  — adjusts quality-gate thresholds from historical AnalysisRun
+	//                    outcomes without calling an LLM.
+	// prompt-optimizer — reads failing Langfuse traces, calls an LLM, and opens a
+	//                    GitHub PR with suggested prompt rewrites.
+	// model-upgrader   — proposes a model version bump when quality plateaus across
+	//                    N consecutive canaries.
+	// all              — runs all three strategies in order.
+	//
+	// +kubebuilder:validation:Enum=threshold-tuner;prompt-optimizer;model-upgrader;all
+	// +kubebuilder:default=all
+	// +optional
+	Strategy string `json:"strategy,omitempty"`
+
+	// Trigger determines when the evolution loop fires.
+	//
+	// on-canary-fail — fires immediately after a canary is aborted by a failed AnalysisRun.
+	// periodic       — fires on a fixed schedule regardless of rollout outcome.
+	// both           — fires on canary failure AND on the periodic schedule.
+	//
+	// +kubebuilder:validation:Enum=on-canary-fail;periodic;both
+	// +kubebuilder:default=on-canary-fail
+	// +optional
+	Trigger string `json:"trigger,omitempty"`
+
+	// Schedule is a cron expression that controls how often the evolution loop fires
+	// when trigger is "periodic" or "both" (e.g., "0 2 * * *" for daily at 02:00 UTC).
+	// Required when trigger is "periodic" or "both"; ignored for "on-canary-fail".
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// ConsecutiveCanariesForPlateau is the number of consecutive successful canaries
+	// with no quality improvement that triggers the model-upgrader strategy.
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:default=3
+	// +optional
+	ConsecutiveCanariesForPlateau *int32 `json:"consecutiveCanariesForPlateau,omitempty"`
+
+	// Optimizer holds LLM connection details used by the prompt-optimizer and
+	// model-upgrader strategies. Required when strategy is "prompt-optimizer",
+	// "model-upgrader", or "all".
+	// +optional
+	Optimizer *EvolutionOptimizerSpec `json:"optimizer,omitempty"`
+
+	// HumanApproval configures human-in-the-loop review via GitHub PRs.
+	// When set, proposed improvements are opened as pull requests rather than
+	// applied directly.
+	// +optional
+	HumanApproval *HumanApprovalSpec `json:"humanApproval,omitempty"`
+}
+
+// EvolutionOptimizerSpec configures the LLM used by the prompt-optimizer and
+// model-upgrader strategies.
+type EvolutionOptimizerSpec struct {
+	// Model is the LLM model identifier (e.g., "claude-sonnet-4-20250514", "gpt-4o").
+	Model string `json:"model"`
+
+	// Provider identifies the LLM API provider.
+	// +kubebuilder:validation:Enum=anthropic;openai
+	// +kubebuilder:default=anthropic
+	// +optional
+	Provider string `json:"provider,omitempty"`
+
+	// SecretRef is the name of a Kubernetes Secret in the same namespace containing
+	// the provider API key. Expected key: API_KEY.
+	SecretRef string `json:"secretRef"`
+}
+
+// HumanApprovalSpec configures human-in-the-loop review for proposed improvements.
+type HumanApprovalSpec struct {
+	// GitHub configures pull request creation for human review.
+	// +optional
+	GitHub *GitHubSpec `json:"github,omitempty"`
+}
+
+// GitHubSpec configures pull request creation in a GitHub repository.
+type GitHubSpec struct {
+	// Owner is the GitHub user or organisation that owns the repository.
+	Owner string `json:"owner"`
+
+	// Repo is the repository name (without the owner prefix).
+	Repo string `json:"repo"`
+
+	// BaseBranch is the target branch for pull requests.
+	// +kubebuilder:default=main
+	// +optional
+	BaseBranch string `json:"baseBranch,omitempty"`
+
+	// SecretRef is the name of a Kubernetes Secret containing the GitHub token.
+	// Expected key: GITHUB_TOKEN. Token must have contents:write and pull_requests:write.
+	SecretRef string `json:"secretRef"`
+}
+
+// EvolutionStatus reflects the observed state of the self-evolution loop.
+type EvolutionStatus struct {
+	// LastProposal is a human-readable summary of the most recent evolution action.
+	// +optional
+	LastProposal string `json:"lastProposal,omitempty"`
+
+	// ProposalCount is the total number of evolution proposals generated.
+	// +optional
+	ProposalCount int32 `json:"proposalCount,omitempty"`
+
+	// LastProposalAt is the time the most recent proposal was generated.
+	// +optional
+	LastProposalAt *metav1.Time `json:"lastProposalAt,omitempty"`
+
+	// NextEvalAt is the scheduled time for the next evolution evaluation.
+	// Populated only when trigger is "periodic" or "both".
+	// +optional
+	NextEvalAt *metav1.Time `json:"nextEvalAt,omitempty"`
+
+	// TunedThresholds records the current adjusted threshold values produced by the
+	// threshold-tuner strategy. Keys are metric names (e.g., "quality_score"); values
+	// are the adjusted thresholds in the same format as the original gate (e.g., "0.78").
+	// +optional
+	TunedThresholds map[string]string `json:"tunedThresholds,omitempty"`
 }
 
 func init() {

@@ -46,7 +46,7 @@ _Goal: make AgentRoll installable, observable, and safe to run in production._
 
 ---
 
-## Sprint 7 — Self-Evolution (Planned)
+## Sprint 7 — Self-Evolution ✅ COMPLETE
 
 _Goal: close the feedback loop — use AgentRoll's own quality signals to improve agents._
 
@@ -67,12 +67,12 @@ New AgentDeployment (auto-created or PR opened for human approval)
 
 ### Planned Items
 
-| # | Item | Mode |
-|---|------|------|
-| 7.1 | **`spec.evolution` CRD extension** — `enabled`, `strategy`, `trigger`, `optimizer`, `humanApproval` fields | CRD |
-| 7.2 | **Threshold tuner** — adjusts `maxCostRatio`, `maxHallucinationRate` gates based on rolling baseline from historical `AnalysisRun` outcomes | No LLM required |
-| 7.3 | **Prompt optimizer** — reads failing trace content from Langfuse, calls LLM to suggest prompt rewrites, opens a PR | LLM-assisted |
-| 7.4 | **Model upgrader** — proposes model version bump when quality plateaus and a newer model is available | LLM-assisted |
+| # | Item | Status |
+|---|------|--------|
+| 7.1 | **`spec.evolution` CRD extension** — `enabled`, `strategy`, `trigger`, `schedule`, `optimizer`, `humanApproval`, `consecutiveCanariesForPlateau`; `status.evolution` with `tunedThresholds`, `proposalCount`, `lastProposal` | ✅ Done |
+| 7.2 | **Threshold tuner** — lists historical `AnalysisRun` outcomes, computes mean ± 1.5σ per metric, stores adjusted thresholds in `status.evolution.tunedThresholds` (no LLM) | ✅ Done |
+| 7.3 | **Prompt optimizer** — reads failing AnalysisRun context + Langfuse traces, calls Anthropic/OpenAI LLM, opens GitHub PR via REST API | ✅ Done |
+| 7.4 | **Model upgrader** — detects quality plateau (σ/μ < 5% over N canaries), calls LLM for upgrade suggestion, opens GitHub PR | ✅ Done |
 
 ---
 

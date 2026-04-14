@@ -398,6 +398,127 @@ spec:
                 items:
                   type: string
                 type: array
+              evolution:
+                description: |-
+                  Evolution configures the self-evolution loop for this agent.
+                  When enabled, the controller analyses canary outcomes and proposes or applies
+                  improvements: threshold tuning, prompt optimisation, or model version bumps.
+                  Disabled by default — opt in explicitly.
+                properties:
+                  consecutiveCanariesForPlateau:
+                    default: 3
+                    description: |-
+                      ConsecutiveCanariesForPlateau is the number of consecutive successful canaries
+                      with no quality improvement that triggers the model-upgrader strategy.
+                    format: int32
+                    minimum: 2
+                    type: integer
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled controls whether the self-evolution loop is active.
+                      Set to true to opt in; all other fields are ignored when false.
+                    type: boolean
+                  humanApproval:
+                    description: |-
+                      HumanApproval configures human-in-the-loop review via GitHub PRs.
+                      When set, proposed improvements are opened as pull requests rather than
+                      applied directly.
+                    properties:
+                      github:
+                        description: GitHub configures pull request creation for human
+                          review.
+                        properties:
+                          baseBranch:
+                            default: main
+                            description: BaseBranch is the target branch for pull
+                              requests.
+                            type: string
+                          owner:
+                            description: Owner is the GitHub user or organisation
+                              that owns the repository.
+                            type: string
+                          repo:
+                            description: Repo is the repository name (without the
+                              owner prefix).
+                            type: string
+                          secretRef:
+                            description: |-
+                              SecretRef is the name of a Kubernetes Secret containing the GitHub token.
+                              Expected key: GITHUB_TOKEN. Token must have contents:write and pull_requests:write.
+                            type: string
+                        required:
+                        - owner
+                        - repo
+                        - secretRef
+                        type: object
+                    type: object
+                  optimizer:
+                    description: |-
+                      Optimizer holds LLM connection details used by the prompt-optimizer and
+                      model-upgrader strategies. Required when strategy is "prompt-optimizer",
+                      "model-upgrader", or "all".
+                    properties:
+                      model:
+                        description: Model is the LLM model identifier (e.g., "claude-sonnet-4-20250514",
+                          "gpt-4o").
+                        type: string
+                      provider:
+                        default: anthropic
+                        description: Provider identifies the LLM API provider.
+                        enum:
+                        - anthropic
+                        - openai
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef is the name of a Kubernetes Secret in the same namespace containing
+                          the provider API key. Expected key: API_KEY.
+                        type: string
+                    required:
+                    - model
+                    - secretRef
+                    type: object
+                  schedule:
+                    description: |-
+                      Schedule is a cron expression that controls how often the evolution loop fires
+                      when trigger is "periodic" or "both" (e.g., "0 2 * * *" for daily at 02:00 UTC).
+                      Required when trigger is "periodic" or "both"; ignored for "on-canary-fail".
+                    type: string
+                  strategy:
+                    default: all
+                    description: |-
+                      Strategy selects which evolution strategies to run.
+
+                      threshold-tuner  — adjusts quality-gate thresholds from historical AnalysisRun
+                                         outcomes without calling an LLM.
+                      prompt-optimizer — reads failing Langfuse traces, calls an LLM, and opens a
+                                         GitHub PR with suggested prompt rewrites.
+                      model-upgrader   — proposes a model version bump when quality plateaus across
+                                         N consecutive canaries.
+                      all              — runs all three strategies in order.
+                    enum:
+                    - threshold-tuner
+                    - prompt-optimizer
+                    - model-upgrader
+                    - all
+                    type: string
+                  trigger:
+                    default: on-canary-fail
+                    description: |-
+                      Trigger determines when the evolution loop fires.
+
+                      on-canary-fail — fires immediately after a canary is aborted by a failed AnalysisRun.
+                      periodic       — fires on a fixed schedule regardless of rollout outcome.
+                      both           — fires on canary failure AND on the periodic schedule.
+                    enum:
+                    - on-canary-fail
+                    - periodic
+                    - both
+                    type: string
+                required:
+                - enabled
+                type: object
               observability:
                 description: Observability configures agent-specific monitoring and
                   tracing.
@@ -668,6 +789,40 @@ spec:
                   - type
                   type: object
                 type: array
+              evolution:
+                description: |-
+                  Evolution reflects the current state of the self-evolution loop.
+                  Populated only after the evolution controller has completed at least one evaluation.
+                properties:
+                  lastProposal:
+                    description: LastProposal is a human-readable summary of the most
+                      recent evolution action.
+                    type: string
+                  lastProposalAt:
+                    description: LastProposalAt is the time the most recent proposal
+                      was generated.
+                    format: date-time
+                    type: string
+                  nextEvalAt:
+                    description: |-
+                      NextEvalAt is the scheduled time for the next evolution evaluation.
+                      Populated only when trigger is "periodic" or "both".
+                    format: date-time
+                    type: string
+                  proposalCount:
+                    description: ProposalCount is the total number of evolution proposals
+                      generated.
+                    format: int32
+                    type: integer
+                  tunedThresholds:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      TunedThresholds records the current adjusted threshold values produced by the
+                      threshold-tuner strategy. Keys are metric names (e.g., "quality_score"); values
+                      are the adjusted thresholds in the same format as the original gate (e.g., "0.78").
+                    type: object
+                type: object
               lastAnalysisResult:
                 description: LastAnalysisResult summarizes the most recent analysis
                   outcome.

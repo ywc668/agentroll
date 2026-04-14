@@ -213,6 +213,15 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Step 5.7: Self-Evolution — analyse canary outcomes and propose improvements.
+	// Skipped gracefully when spec.evolution.enabled is false (the default).
+	if err := r.reconcileEvolution(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile Evolution")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "EvolutionError",
+			fmt.Sprintf("evolution loop failed: %v", err))
+		// Evolution failures are non-fatal — continue to status update.
+	}
+
 	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.
 	prevPhase := agentDeploy.Status.Phase
 	if err := r.updateStatus(ctx, agentDeploy, compositeVersion); err != nil {
