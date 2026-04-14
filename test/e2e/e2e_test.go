@@ -437,6 +437,12 @@ spec:
 		By("triggering a canary deployment with the always-fail analysis step")
 		Expect(applyYAML(canaryAgentDeployment)).To(Succeed())
 
+		By("forcing a reconcile so the controller picks up the canary spec update")
+		cmd := exec.Command("kubectl", "annotate", "agentdeployment", agentName,
+			"-n", testNamespace,
+			"--overwrite", "agentroll.dev/reconcile=canary")
+		_, _ = utils.Run(cmd)
+
 		By("waiting for an AnalysisRun to be created for revision 2")
 		var analysisRunName string
 		waitForAnalysisRun := func(g Gomega) {
@@ -479,7 +485,7 @@ spec:
 		Eventually(waitForRolloutDegraded, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("asserting AgentDeployment status reflects the rollback")
-		cmd := exec.Command("kubectl", "get", "agentdeployment", agentName,
+		cmd = exec.Command("kubectl", "get", "agentdeployment", agentName,
 			"-n", testNamespace,
 			"-o", "jsonpath={.status.phase}")
 		phaseOut, err := utils.Run(cmd)
