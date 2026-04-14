@@ -59,6 +59,15 @@ const defaultLangfuseMetricsImage = "ghcr.io/agentroll/langfuse-metrics:v1"
 // orphaned Argo Rollouts before the AgentDeployment object is removed.
 const agentDeploymentFinalizer = "agentroll.dev/finalizer"
 
+// managedAnalysisTemplates is the set of AnalysisTemplates that AgentRoll owns and
+// manages. Only these templates receive the standard injected args (service-name,
+// service-port, namespace, canary-version, stable-version) because they declare
+// those args in their spec. User-managed templates must declare their own args.
+var managedAnalysisTemplates = map[string]bool{
+	"agent-quality-check": true,
+	"agent-cost-check":    true,
+}
+
 // Repeated string constants — extracted to satisfy goconst.
 const (
 	defaultLangfuseSecret   = "langfuse-credentials"
@@ -471,44 +480,36 @@ func translateSteps(agentDeploy *agentrollv1alpha1.AgentDeployment) []rolloutsv1
 			})
 		}
 
-		// Step 3: Analysis (if specified)
-		// Now includes args that tell the analysis runner how to reach the agent
+		// Step 3: Analysis (if specified).
+		// Only inject standard args (service-name, service-port, namespace,
+		// canary-version, stable-version) for managed templates that declare them.
+		// User-managed templates are responsible for declaring their own args —
+		// passing undeclared args causes Argo Rollouts to reject the AnalysisRun.
 		if step.Analysis != nil {
+			var analysisArgs []rolloutsv1alpha1.AnalysisRunArgument
+			if managedAnalysisTemplates[step.Analysis.TemplateRef] {
+				analysisArgs = []rolloutsv1alpha1.AnalysisRunArgument{
+					{Name: "service-name", Value: agentDeploy.Name},
+					{Name: "service-port", Value: servicePort},
+					{Name: "namespace", Value: agentDeploy.Namespace},
+					{
+						// Langfuse-based templates filter traces by this version tag.
+						Name:  "canary-version",
+						Value: fmt.Sprintf("%s.%s", agentDeploy.Spec.AgentMeta.PromptVersion, agentDeploy.Spec.AgentMeta.ModelVersion),
+					},
+					{
+						// Used by agent-cost-check to compare canary vs stable token cost.
+						Name:  "stable-version",
+						Value: agentDeploy.Status.StableVersion,
+					},
+				}
+			}
 			argoSteps = append(argoSteps, rolloutsv1alpha1.CanaryStep{
 				Analysis: &rolloutsv1alpha1.RolloutAnalysis{
 					Templates: []rolloutsv1alpha1.AnalysisTemplateRef{
-						{
-							TemplateName: step.Analysis.TemplateRef,
-						},
+						{TemplateName: step.Analysis.TemplateRef},
 					},
-					Args: []rolloutsv1alpha1.AnalysisRunArgument{
-						{
-							Name:  "service-name",
-							Value: agentDeploy.Name,
-						},
-						{
-							Name:  "service-port",
-							Value: servicePort,
-						},
-						{
-							Name:  "namespace",
-							Value: agentDeploy.Namespace,
-						},
-						{
-							// Injected so Langfuse-based AnalysisTemplates can filter traces
-							// for this specific canary version (e.g. agent-langfuse-check.yaml).
-							// Uses "{promptVersion}.{modelVersion}" (no image tag) to match the
-							// tag format that agent.py writes to Langfuse traces.
-							Name:  "canary-version",
-							Value: fmt.Sprintf("%s.%s", agentDeploy.Spec.AgentMeta.PromptVersion, agentDeploy.Spec.AgentMeta.ModelVersion),
-						},
-						{
-							// The currently stable version, used by token_cost_ratio and
-							// similar metrics that compare canary cost against stable baseline.
-							Name:  "stable-version",
-							Value: agentDeploy.Status.StableVersion,
-						},
-					},
+					Args: analysisArgs,
 				},
 			})
 		}
@@ -604,14 +605,8 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 		}
 	}
 
-	// Pre-built templates that AgentRoll manages
-	managedTemplates := map[string]bool{
-		"agent-quality-check": true,
-		"agent-cost-check":    true,
-	}
-
 	for name := range templateNames {
-		if !managedTemplates[name] {
+		if !managedAnalysisTemplates[name] {
 			log.Info("AnalysisTemplate is user-managed, skipping", "name", name)
 			continue
 		}
