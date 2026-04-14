@@ -224,7 +224,18 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	log.Info("Successfully reconciled AgentDeployment", "name", agentDeploy.Name)
-	return ctrl.Result{}, nil
+
+	// Belt-and-suspenders requeue: in environments where Rollout watch events are
+	// unreliable (e.g., some Kind/CI setups), we poll rather than relying solely on
+	// Owns(Rollout) to wake us up.  Active phases requeue quickly; stable/degraded
+	// phases requeue slowly to catch incoming canary deployments (spec changes) if
+	// the For(AgentDeployment) watch event is also delayed.
+	switch agentDeploy.Status.Phase {
+	case agentrollv1alpha1.PhaseProgressing, agentrollv1alpha1.PhasePending, agentrollv1alpha1.PhaseRollingBack:
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	default: // Stable, Degraded, or empty (initial)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 }
 
 // handleDeletion cleans up owned resources and removes the finalizer so the
