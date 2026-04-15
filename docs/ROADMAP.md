@@ -76,6 +76,28 @@ New AgentDeployment (auto-created or PR opened for human approval)
 
 ---
 
+## Sprint 8 — Real Feedback Loop ✅ COMPLETE
+
+_Goal: close the three gaps that made Sprint 7's "evolution" hollow._
+
+### What Sprint 7 left hollow
+
+Sprint 7 stored `tunedThresholds` in status but never applied them back.
+The threshold tuner found nothing to learn from (Job-based analysis produces only exit codes, no numeric measurements).
+The prompt optimizer wrote Markdown files to GitHub but couldn't auto-apply changes.
+
+### Sprint 8 fixes
+
+| # | Item | Status |
+|---|------|--------|
+| 8.1 | **Threshold write-back** — `qualityJobSpec` and `costCheckJobSpec` now accept `tuned map[string]string`; computed thresholds (`max_latency_ms`, `min_response_len`, `min_tool_calls`, `min_success_rate`, `max_hallucination_rate`) are injected as env vars into analysis Job containers on the next reconcile, replacing hardcoded defaults | ✅ Done |
+| 8.1 | **Langfuse score signal** — threshold tuner falls back to `GET /api/public/scores` when Job-based AnalysisRun measurements are empty; normalises Langfuse score names to threshold keys (`avg_latency→max_latency_ms`, `tool_success_rate→min_success_rate`, `hallucination_rate→max_hallucination_rate`) | ✅ Done |
+| 8.2 | **Prompt ConfigMap store** — `spec.evolution.promptConfigMap` field; prompt optimizer writes improved prompts directly to the named ConfigMap (`system_prompt` key) when `humanApproval` is nil; `buildPodSpec` injects `SYSTEM_PROMPT` env var from that ConfigMap so the next pod restart picks up the new prompt | ✅ Done |
+| 8.3 | **Evolution history ring buffer** — `status.evolution.history` (max 20 entries); each `EvolutionHistoryEntry` records `at`, `strategy`, `description`, `phase`; oldest entries evicted automatically | ✅ Done |
+| 8.4 | **Unit tests** — 6 new tests: `TestTunedOrDefault_*` (3), `TestAppendEvolutionHistory_*` (3); all passing | ✅ Done |
+
+---
+
 ## Completed
 
 | Sprint | Deliverable |

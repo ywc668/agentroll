@@ -6,6 +6,7 @@ Licensed under the MIT License.
 package controller
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -165,5 +166,91 @@ func TestThresholdDirection_LowerBound(t *testing.T) {
 	}
 	if expected < 0 {
 		t.Errorf("lower bound threshold should be >= 0, got %f", expected)
+	}
+}
+
+// ── tunedOrDefault ───────────────────────────────────────────────────────────
+
+func TestTunedOrDefault_UsesDefault(t *testing.T) {
+	got := tunedOrDefault(nil, "max_latency_ms", "10000")
+	if got != "10000" {
+		t.Errorf("expected default 10000, got %q", got)
+	}
+}
+
+func TestTunedOrDefault_UsesTunedValue(t *testing.T) {
+	tuned := map[string]string{"max_latency_ms": "7500.0000"}
+	got := tunedOrDefault(tuned, "max_latency_ms", "10000")
+	if got != "7500.0000" {
+		t.Errorf("expected tuned 7500.0000, got %q", got)
+	}
+}
+
+func TestTunedOrDefault_EmptyValueFallsBack(t *testing.T) {
+	tuned := map[string]string{"max_latency_ms": ""}
+	got := tunedOrDefault(tuned, "max_latency_ms", "10000")
+	if got != "10000" {
+		t.Errorf("empty tuned value should fall back to default, got %q", got)
+	}
+}
+
+// ── appendEvolutionHistory ───────────────────────────────────────────────────
+
+func TestAppendEvolutionHistory_Basic(t *testing.T) {
+	st := &agentrollv1alpha1.EvolutionStatus{}
+	entry := agentrollv1alpha1.EvolutionHistoryEntry{
+		Strategy:    "threshold-tuner",
+		Description: "adjusted max_latency_ms→8000",
+		Phase:       "Degraded",
+	}
+	appendEvolutionHistory(st, entry)
+	if len(st.History) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(st.History))
+	}
+	if st.History[0].Strategy != "threshold-tuner" {
+		t.Errorf("unexpected strategy %q", st.History[0].Strategy)
+	}
+}
+
+func TestAppendEvolutionHistory_RingBuffer(t *testing.T) {
+	st := &agentrollv1alpha1.EvolutionStatus{}
+	for i := 0; i < 25; i++ {
+		appendEvolutionHistory(st, agentrollv1alpha1.EvolutionHistoryEntry{
+			Strategy:    "threshold-tuner",
+			Description: fmt.Sprintf("run %d", i),
+		})
+	}
+	if len(st.History) != 20 {
+		t.Errorf("expected history capped at 20, got %d", len(st.History))
+	}
+	// The oldest 5 entries (0–4) should have been evicted; entry 5 is now first.
+	if st.History[0].Description != "run 5" {
+		t.Errorf("expected oldest surviving entry to be 'run 5', got %q", st.History[0].Description)
+	}
+	if st.History[19].Description != "run 24" {
+		t.Errorf("expected newest entry to be 'run 24', got %q", st.History[19].Description)
+	}
+}
+
+func TestAppendEvolutionHistory_ExactlyAtLimit(t *testing.T) {
+	st := &agentrollv1alpha1.EvolutionStatus{}
+	for i := 0; i < 20; i++ {
+		appendEvolutionHistory(st, agentrollv1alpha1.EvolutionHistoryEntry{
+			Strategy: "model-upgrader",
+		})
+	}
+	if len(st.History) != 20 {
+		t.Errorf("expected 20 entries, got %d", len(st.History))
+	}
+	// Adding one more should evict the oldest.
+	appendEvolutionHistory(st, agentrollv1alpha1.EvolutionHistoryEntry{
+		Strategy:    "prompt-optimizer",
+		Description: "last",
+	})
+	if len(st.History) != 20 {
+		t.Errorf("expected still 20 after overflow, got %d", len(st.History))
+	}
+	if st.History[19].Strategy != "prompt-optimizer" {
+		t.Errorf("expected newest to be prompt-optimizer, got %q", st.History[19].Strategy)
 	}
 }

@@ -472,7 +472,7 @@ func TestParseDuration(t *testing.T) {
 // ── buildManagedTemplateSpec ────────────────────────────────────────────────
 
 func TestBuildManagedTemplateSpec_QualityCheck(t *testing.T) {
-	spec := buildManagedTemplateSpec("agent-quality-check")
+	spec := buildManagedTemplateSpec("agent-quality-check", nil)
 	if len(spec.Metrics) == 0 {
 		t.Error("expected at least one metric")
 	}
@@ -482,7 +482,7 @@ func TestBuildManagedTemplateSpec_QualityCheck(t *testing.T) {
 }
 
 func TestBuildManagedTemplateSpec_CostCheck(t *testing.T) {
-	spec := buildManagedTemplateSpec("agent-cost-check")
+	spec := buildManagedTemplateSpec("agent-cost-check", nil)
 	if len(spec.Metrics) == 0 {
 		t.Error("expected at least one metric")
 	}

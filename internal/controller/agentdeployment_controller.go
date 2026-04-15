@@ -654,12 +654,19 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 			},
 		}
 
+		// Extract tuned thresholds from evolution status so analysis Jobs use
+		// data-driven values instead of hardcoded defaults.
+		var tunedThresholds map[string]string
+		if agentDeploy.Status.Evolution != nil {
+			tunedThresholds = agentDeploy.Status.Evolution.TunedThresholds
+		}
+
 		result, createErr := controllerutil.CreateOrUpdate(ctx, r.Client, template, func() error {
 			template.Labels = map[string]string{
 				"app.kubernetes.io/managed-by": "agentroll",
 				"agentroll.dev/template-type":  "quality",
 			}
-			template.Spec = buildManagedTemplateSpec(name)
+			template.Spec = buildManagedTemplateSpec(name, tunedThresholds)
 			return nil
 		})
 
@@ -673,21 +680,32 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 	return nil
 }
 
+// tunedOrDefault returns the tuned threshold value for key if present in the map,
+// otherwise returns dflt. This allows data-driven thresholds computed by the
+// threshold-tuner strategy to override the hardcoded Job env var defaults.
+func tunedOrDefault(tuned map[string]string, key, dflt string) string {
+	if v, ok := tuned[key]; ok && v != "" {
+		return v
+	}
+	return dflt
+}
+
 // buildManagedTemplateSpec returns the AnalysisTemplateSpec for a managed template.
 // agent-quality-check: runner.py-based health + quality checks against the agent HTTP API.
 // agent-cost-check: langfuse_metrics.py-based token cost comparison (canary vs stable).
-func buildManagedTemplateSpec(name string) rolloutsv1alpha1.AnalysisTemplateSpec {
+// tuned may be nil; if set, data-driven threshold values override hardcoded defaults.
+func buildManagedTemplateSpec(name string, tuned map[string]string) rolloutsv1alpha1.AnalysisTemplateSpec {
 	switch name {
 	case "agent-cost-check":
-		return costCheckTemplateSpec()
+		return costCheckTemplateSpec(tuned)
 	default:
-		return qualityCheckTemplateSpec()
+		return qualityCheckTemplateSpec(tuned)
 	}
 }
 
 // qualityCheckTemplateSpec builds the spec for the agent-quality-check managed template.
 // Runs runner.py as a Job: health check, query validation, latency, content quality.
-func qualityCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
+func qualityCheckTemplateSpec(tuned map[string]string) rolloutsv1alpha1.AnalysisTemplateSpec {
 	defaultPort := "8080"
 	return rolloutsv1alpha1.AnalysisTemplateSpec{
 		Args: []rolloutsv1alpha1.Argument{
@@ -702,7 +720,7 @@ func qualityCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
 				// Argo Rollouts Job metrics use the Job completion status.
 				Provider: rolloutsv1alpha1.MetricProvider{
 					Job: &rolloutsv1alpha1.JobMetric{
-						Spec: qualityJobSpec(),
+						Spec: qualityJobSpec(tuned),
 					},
 				},
 			},
@@ -713,7 +731,7 @@ func qualityCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
 // costCheckTemplateSpec builds the spec for the agent-cost-check managed template.
 // Runs langfuse_metrics.py with METRIC=token_cost_ratio to compare canary vs stable
 // token cost.  Injected automatically when spec.rollback.onCostSpike is configured.
-func costCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
+func costCheckTemplateSpec(tuned map[string]string) rolloutsv1alpha1.AnalysisTemplateSpec {
 	localLangfuseHost := defaultLangfuseHost
 	localLangfuseSecret := defaultLangfuseSecret
 	defaultMaxCostRatio := "2.0"
@@ -739,7 +757,7 @@ func costCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
 				FailureLimit: &failureLimit,
 				Provider: rolloutsv1alpha1.MetricProvider{
 					Job: &rolloutsv1alpha1.JobMetric{
-						Spec: costCheckJobSpec(),
+						Spec: costCheckJobSpec(tuned),
 					},
 				},
 			},
@@ -748,8 +766,25 @@ func costCheckTemplateSpec() rolloutsv1alpha1.AnalysisTemplateSpec {
 }
 
 // qualityJobSpec creates a Job spec for the runner.py-based quality check.
-func qualityJobSpec() batchv1.JobSpec {
+// tuned values (from the threshold-tuner strategy) override the hardcoded defaults
+// when present. Supported keys: max_latency_ms, min_response_len, min_tool_calls.
+func qualityJobSpec(tuned map[string]string) batchv1.JobSpec {
 	backoffLimit := int32(0)
+	envVars := []corev1.EnvVar{
+		{
+			// Argo Rollouts interpolates {{args.xxx}} at runtime
+			Name:  "AGENT_SERVICE_URL",
+			Value: "http://{{args.service-name}}.{{args.namespace}}.svc:{{args.service-port}}",
+		},
+		{Name: "MAX_LATENCY_MS", Value: tunedOrDefault(tuned, "max_latency_ms", "10000")},
+		{Name: "MIN_RESPONSE_LEN", Value: tunedOrDefault(tuned, "min_response_len", "50")},
+	}
+	// Inject MIN_TOOL_CALLS only when a tuned value exists; the current runner.py
+	// defaults to requiring at least 1 tool call but only enforces this when
+	// MIN_TOOL_CALLS is explicitly set to a value > 0.
+	if v, ok := tuned["min_tool_calls"]; ok && v != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "MIN_TOOL_CALLS", Value: v})
+	}
 	return batchv1.JobSpec{
 		BackoffLimit: &backoffLimit,
 		Template: corev1.PodTemplateSpec{
@@ -759,15 +794,7 @@ func qualityJobSpec() batchv1.JobSpec {
 					{
 						Name:  "analysis",
 						Image: defaultAnalysisImage,
-						Env: []corev1.EnvVar{
-							{
-								// Argo Rollouts interpolates {{args.xxx}} at runtime
-								Name:  "AGENT_SERVICE_URL",
-								Value: "http://{{args.service-name}}.{{args.namespace}}.svc:{{args.service-port}}",
-							},
-							{Name: "MAX_LATENCY_MS", Value: "10000"},
-							{Name: "MIN_RESPONSE_LEN", Value: "50"},
-						},
+						Env:   envVars,
 					},
 				},
 			},
@@ -777,8 +804,48 @@ func qualityJobSpec() batchv1.JobSpec {
 
 // costCheckJobSpec creates a Job spec for the langfuse_metrics.py cost ratio check.
 // Compares canary token cost (per trace) against stable token cost using Langfuse data.
-func costCheckJobSpec() batchv1.JobSpec {
+// tuned values override hardcoded defaults. Supported keys: min_success_rate, max_hallucination_rate.
+func costCheckJobSpec(tuned map[string]string) batchv1.JobSpec {
 	backoffLimit := int32(0)
+	envVars := []corev1.EnvVar{
+		{Name: "LANGFUSE_HOST", Value: "{{args.langfuse-host}}"},
+		{
+			Name: "LANGFUSE_PUBLIC_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "{{args.langfuse-secret-name}}",
+					},
+					Key: "public-key",
+				},
+			},
+		},
+		{
+			Name: "LANGFUSE_SECRET_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "{{args.langfuse-secret-name}}",
+					},
+					Key: "secret-key",
+				},
+			},
+		},
+		{Name: "CANARY_VERSION", Value: "{{args.canary-version}}"},
+		{Name: "STABLE_VERSION", Value: "{{args.stable-version}}"},
+		{Name: "METRIC", Value: "token_cost_ratio"},
+		{Name: "MAX_COST_RATIO", Value: "{{args.max-cost-ratio}}"},
+		{Name: "TIME_WINDOW_MINUTES", Value: "{{args.time-window-minutes}}"},
+		{Name: "MIN_TRACES", Value: "{{args.min-traces}}"},
+	}
+	// Inject tuned thresholds when present; these override default behaviour
+	// in langfuse_metrics.py without changing the AnalysisTemplate args.
+	if v, ok := tuned["min_success_rate"]; ok && v != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "MIN_SUCCESS_RATE", Value: v})
+	}
+	if v, ok := tuned["max_hallucination_rate"]; ok && v != "" {
+		envVars = append(envVars, corev1.EnvVar{Name: "MAX_HALLUCINATION_RATE", Value: v})
+	}
 	return batchv1.JobSpec{
 		BackoffLimit: &backoffLimit,
 		Template: corev1.PodTemplateSpec{
@@ -788,37 +855,7 @@ func costCheckJobSpec() batchv1.JobSpec {
 					{
 						Name:  "cost-checker",
 						Image: defaultLangfuseMetricsImage,
-						Env: []corev1.EnvVar{
-							{Name: "LANGFUSE_HOST", Value: "{{args.langfuse-host}}"},
-							{
-								Name: "LANGFUSE_PUBLIC_KEY",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "{{args.langfuse-secret-name}}",
-										},
-										Key: "public-key",
-									},
-								},
-							},
-							{
-								Name: "LANGFUSE_SECRET_KEY",
-								ValueFrom: &corev1.EnvVarSource{
-									SecretKeyRef: &corev1.SecretKeySelector{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: "{{args.langfuse-secret-name}}",
-										},
-										Key: "secret-key",
-									},
-								},
-							},
-							{Name: "CANARY_VERSION", Value: "{{args.canary-version}}"},
-							{Name: "STABLE_VERSION", Value: "{{args.stable-version}}"},
-							{Name: "METRIC", Value: "token_cost_ratio"},
-							{Name: "MAX_COST_RATIO", Value: "{{args.max-cost-ratio}}"},
-							{Name: "TIME_WINDOW_MINUTES", Value: "{{args.time-window-minutes}}"},
-							{Name: "MIN_TRACES", Value: "{{args.min-traces}}"},
-						},
+						Env:   envVars,
 					},
 				},
 			},
@@ -1182,7 +1219,7 @@ func buildPodSpec(agentDeploy *agentrollv1alpha1.AgentDeployment) corev1.PodSpec
 
 		containers = append(containers, sidecar)
 
-		// ConfigMap volume for OTel config
+		// OTel ConfigMap volume
 		volumes = append(volumes, corev1.Volume{
 			Name: "otel-config",
 			VolumeSource: corev1.VolumeSource{
@@ -1190,6 +1227,25 @@ func buildPodSpec(agentDeploy *agentrollv1alpha1.AgentDeployment) corev1.PodSpec
 					LocalObjectReference: corev1.LocalObjectReference{
 						Name: fmt.Sprintf("%s-otel-config", agentDeploy.Name),
 					},
+				},
+			},
+		})
+	}
+
+	// Inject SYSTEM_PROMPT from the evolution PromptConfigMap when configured.
+	// The prompt-optimizer strategy writes updated prompts here so the next pod
+	// restart picks up the new prompt without rebuilding the image.
+	if agentDeploy.Spec.Evolution != nil && agentDeploy.Spec.Evolution.PromptConfigMap != "" {
+		optional := true
+		containers[0].Env = append(containers[0].Env, corev1.EnvVar{
+			Name: "SYSTEM_PROMPT",
+			ValueFrom: &corev1.EnvVarSource{
+				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: agentDeploy.Spec.Evolution.PromptConfigMap,
+					},
+					Key:      "system_prompt",
+					Optional: &optional,
 				},
 			},
 		})

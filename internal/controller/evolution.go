@@ -140,8 +140,33 @@ func (r *AgentDeploymentReconciler) reconcileEvolution(
 	agentDeploy.Status.Evolution.LastProposalAt = &now
 	agentDeploy.Status.Evolution.ProposalCount++
 
+	// Append one history entry per strategy that produced a proposal.
+	for _, p := range proposals {
+		strategyName := "unknown"
+		if idx := strings.Index(p, ":"); idx > 0 {
+			strategyName = p[:idx]
+		}
+		appendEvolutionHistory(agentDeploy.Status.Evolution,
+			agentrollv1alpha1.EvolutionHistoryEntry{
+				At:          now,
+				Strategy:    strategyName,
+				Description: p,
+				Phase:       string(phase),
+			})
+	}
+
 	log.Info("Evolution proposals generated", "count", len(proposals), "summary", summary)
 	return nil
+}
+
+// appendEvolutionHistory appends entry to the history ring buffer, trimming to the
+// last maxEvolutionHistory entries so status does not grow without bound.
+func appendEvolutionHistory(st *agentrollv1alpha1.EvolutionStatus, entry agentrollv1alpha1.EvolutionHistoryEntry) {
+	const maxEvolutionHistory = 20
+	st.History = append(st.History, entry)
+	if len(st.History) > maxEvolutionHistory {
+		st.History = st.History[len(st.History)-maxEvolutionHistory:]
+	}
 }
 
 // periodicTriggerDue returns true when the periodic schedule is due.
@@ -220,8 +245,21 @@ func (r *AgentDeploymentReconciler) runThresholdTuner(
 		}
 	}
 
+	// Job-based AnalysisRuns produce no numeric measurements (only exit codes).
+	// Fall back to Langfuse scores as the numeric signal when Langfuse is configured.
 	if len(metricValues) == 0 {
-		log.Info("No numeric metric values found in AnalysisRuns, threshold tuner skipped")
+		if obs := agentDeploy.Spec.Observability; obs != nil && obs.Langfuse != nil {
+			langfuseScores, err := r.fetchLangfuseScores(ctx, agentDeploy, obs.Langfuse)
+			if err != nil {
+				log.Error(err, "failed to fetch Langfuse scores for threshold tuner, skipping")
+			} else {
+				metricValues = langfuseScores
+			}
+		}
+	}
+
+	if len(metricValues) == 0 {
+		log.Info("No numeric metric values found (AnalysisRuns or Langfuse), threshold tuner skipped")
 		return "", nil
 	}
 
@@ -365,7 +403,7 @@ Keep your response concise (under 500 words) and structured.`
 		"model", ev.Optimizer.Model,
 		"suggestionLength", len(suggestion))
 
-	// Open a GitHub PR if humanApproval is configured.
+	// When humanApproval is configured, open a GitHub PR for human review.
 	if ev.HumanApproval != nil && ev.HumanApproval.GitHub != nil {
 		prURL, err := r.openEvolutionPR(ctx, agentDeploy, "prompt-optimizer", suggestion)
 		if err != nil {
@@ -375,7 +413,60 @@ Keep your response concise (under 500 words) and structured.`
 		return fmt.Sprintf("prompt-optimizer: PR opened %s", prURL), nil
 	}
 
+	// When promptConfigMap is configured (and no human approval gate), write the
+	// improved prompt directly to the ConfigMap so the next pod restart picks it up.
+	if ev.PromptConfigMap != "" {
+		if err := r.writePromptToConfigMap(ctx, agentDeploy, suggestion); err != nil {
+			log.Error(err, "failed to write prompt to ConfigMap",
+				"configmap", ev.PromptConfigMap)
+			return fmt.Sprintf("prompt-optimizer: suggestion generated (ConfigMap write failed: %v)", err), nil
+		}
+		log.Info("Prompt optimizer wrote improved prompt to ConfigMap",
+			"configmap", ev.PromptConfigMap)
+		return fmt.Sprintf("prompt-optimizer: prompt written to ConfigMap %s (%d chars)",
+			ev.PromptConfigMap, len(suggestion)), nil
+	}
+
 	return fmt.Sprintf("prompt-optimizer: suggestion generated (%d chars)", len(suggestion)), nil
+}
+
+// writePromptToConfigMap creates or updates the named ConfigMap with the new system prompt
+// under the key "system_prompt". The ConfigMap is owned by the AgentDeployment so it is
+// garbage-collected when the AgentDeployment is deleted.
+func (r *AgentDeploymentReconciler) writePromptToConfigMap(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+	prompt string,
+) error {
+	cm := &corev1.ConfigMap{}
+	name := agentDeploy.Spec.Evolution.PromptConfigMap
+	key := client.ObjectKey{Namespace: agentDeploy.Namespace, Name: name}
+
+	if err := r.Get(ctx, key, cm); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return fmt.Errorf("get ConfigMap %s: %w", name, err)
+		}
+		// ConfigMap does not exist yet — create it.
+		cm = &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: agentDeploy.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by": "agentroll",
+					"agentroll.dev/component":      "prompt-store",
+				},
+			},
+			Data: map[string]string{"system_prompt": prompt},
+		}
+		return r.Create(ctx, cm)
+	}
+
+	// ConfigMap exists — update the system_prompt key.
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	cm.Data["system_prompt"] = prompt
+	return r.Update(ctx, cm)
 }
 
 // buildFailureContext extracts a textual summary of what failed in the most recent
@@ -487,8 +578,8 @@ func (r *AgentDeploymentReconciler) fetchLangfuseFailingTraces(
 	// Parse just enough to extract trace IDs and output snippets.
 	var result struct {
 		Data []struct {
-			ID     string `json:"id"`
-			Output string `json:"output"`
+			ID     string   `json:"id"`
+			Output string   `json:"output"`
 			Tags   []string `json:"tags"`
 		} `json:"data"`
 	}
@@ -512,6 +603,95 @@ func (r *AgentDeploymentReconciler) fetchLangfuseFailingTraces(
 		}
 	}
 	return sb.String(), nil
+}
+
+// fetchLangfuseScores queries the Langfuse Scores API and returns a map of
+// score name → float64 slice usable by the threshold tuner.
+//
+// Score name normalisation (Langfuse name → threshold key):
+//
+//	avg_latency        → max_latency_ms       (upper bound — lower is better)
+//	tool_success_rate  → min_success_rate      (lower bound — higher is better)
+//	hallucination_rate → max_hallucination_rate (upper bound — lower is better)
+//
+// Other score names are used as-is so user-defined scores also benefit from tuning.
+func (r *AgentDeploymentReconciler) fetchLangfuseScores(
+	ctx context.Context,
+	agentDeploy *agentrollv1alpha1.AgentDeployment,
+	lf *agentrollv1alpha1.LangfuseSpec,
+) (map[string][]float64, error) {
+	if lf.SecretRef == "" {
+		return nil, nil
+	}
+
+	publicKey, err := r.readSecretKey(ctx, agentDeploy.Namespace, lf.SecretRef, "LANGFUSE_PUBLIC_KEY")
+	if err != nil {
+		return nil, err
+	}
+	secretKey, err := r.readSecretKey(ctx, agentDeploy.Namespace, lf.SecretRef, "LANGFUSE_SECRET_KEY")
+	if err != nil {
+		return nil, err
+	}
+
+	host := lf.Endpoint
+	if host == "" {
+		host = "https://cloud.langfuse.com"
+	}
+	host = strings.TrimRight(host, "/")
+
+	// Query the last 100 scores across all traces for this agent.
+	// Langfuse scores are tagged with the agent name via the trace name prefix.
+	reqURL := fmt.Sprintf("%s/api/public/scores?limit=100", host)
+	httpCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(httpCtx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(publicKey, secretKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Langfuse scores API returned %d: %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Data []struct {
+			Name  string  `json:"name"`
+			Value float64 `json:"value"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing Langfuse scores response: %w", err)
+	}
+
+	// Normalise score names to threshold keys.
+	normalise := func(name string) string {
+		switch name {
+		case "avg_latency":
+			return "max_latency_ms"
+		case "tool_success_rate":
+			return "min_success_rate"
+		case "hallucination_rate":
+			return "max_hallucination_rate"
+		default:
+			return name
+		}
+	}
+
+	out := map[string][]float64{}
+	for _, s := range result.Data {
+		key := normalise(s.Name)
+		out[key] = append(out[key], s.Value)
+	}
+	return out, nil
 }
 
 // ─── 7.4 Model Upgrader ──────────────────────────────────────────────────────

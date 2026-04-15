@@ -434,6 +434,20 @@ type EvolutionSpec struct {
 	// applied directly.
 	// +optional
 	HumanApproval *HumanApprovalSpec `json:"humanApproval,omitempty"`
+
+	// PromptConfigMap is the name of a ConfigMap (in the same namespace) that
+	// holds versioned system prompts. Expected key: "system_prompt".
+	//
+	// When set, the prompt-optimizer strategy writes its improved prompt directly
+	// to this ConfigMap (key: "system_prompt") instead of — or in addition to —
+	// opening a GitHub PR. The controller then injects a SYSTEM_PROMPT env var
+	// into the agent container sourced from this ConfigMap, so the next pod
+	// restart picks up the new prompt without a new image build.
+	//
+	// When humanApproval is also configured, the PR is opened AND the ConfigMap
+	// is NOT updated automatically (human review required first).
+	// +optional
+	PromptConfigMap string `json:"promptConfigMap,omitempty"`
 }
 
 // EvolutionOptimizerSpec configures the LLM used by the prompt-optimizer and
@@ -498,10 +512,36 @@ type EvolutionStatus struct {
 	NextEvalAt *metav1.Time `json:"nextEvalAt,omitempty"`
 
 	// TunedThresholds records the current adjusted threshold values produced by the
-	// threshold-tuner strategy. Keys are metric names (e.g., "quality_score"); values
-	// are the adjusted thresholds in the same format as the original gate (e.g., "0.78").
+	// threshold-tuner strategy. Keys are metric names (e.g., "max_latency_ms"); values
+	// are the adjusted thresholds as decimal strings (e.g., "8523.4200").
+	// These are injected as env vars into the analysis Job containers on the next
+	// AnalysisTemplate reconcile, replacing the hardcoded defaults.
 	// +optional
 	TunedThresholds map[string]string `json:"tunedThresholds,omitempty"`
+
+	// History records the last 20 evolution loop executions in chronological order.
+	// Oldest entries are dropped when the buffer is full.
+	// +optional
+	History []EvolutionHistoryEntry `json:"history,omitempty"`
+}
+
+// EvolutionHistoryEntry records a single execution of the evolution loop.
+type EvolutionHistoryEntry struct {
+	// At is the timestamp when this evolution loop execution fired.
+	At metav1.Time `json:"at"`
+
+	// Strategy is the name of the strategy that produced this entry
+	// (e.g., "threshold-tuner", "prompt-optimizer", "model-upgrader").
+	Strategy string `json:"strategy"`
+
+	// Description is a brief human-readable summary of what the strategy did
+	// (e.g., "adjusted max_latency_ms→8523.4200, min_success_rate→0.8750").
+	Description string `json:"description"`
+
+	// Phase is the AgentDeployment phase that triggered the evolution loop
+	// (e.g., "Degraded", "Stable"). Empty for periodic triggers.
+	// +optional
+	Phase string `json:"phase,omitempty"`
 }
 
 func init() {
