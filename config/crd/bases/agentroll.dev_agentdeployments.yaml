@@ -398,6 +398,46 @@ spec:
                 items:
                   type: string
                 type: array
+              evaluation:
+                description: |-
+                  Evaluation configures the LLM-as-judge quality scoring layer.
+                  When set, the controller creates an agent-judge-check AnalysisTemplate
+                  that scores canary responses with an LLM and writes quality scores to Langfuse.
+                properties:
+                  configMap:
+                    description: |-
+                      ConfigMap is the name of a ConfigMap (in the same namespace) holding
+                      evaluation configuration. Supported keys:
+                        "rubric"       — evaluation criteria text injected as EVAL_RUBRIC
+                        "test_prompts" — JSON array of test input strings injected as TEST_QUERIES
+                      When absent, the judge runner uses its built-in default rubric and queries.
+                    type: string
+                  judgeModel:
+                    description: |-
+                      JudgeModel is the LLM model ID used for evaluation.
+                      Defaults to "claude-haiku-4-5-20251001" when empty.
+                    type: string
+                  judgeProvider:
+                    default: anthropic
+                    description: JudgeProvider is the LLM API provider.
+                    enum:
+                    - anthropic
+                    - openai
+                    type: string
+                  minScore:
+                    default: "0.7"
+                    description: |-
+                      MinScore is the minimum acceptable mean quality score (0.0–1.0).
+                      The analysis Job exits 0 (pass) if the mean score >= MinScore, 1 (fail) otherwise.
+                    type: string
+                  secretRef:
+                    description: |-
+                      SecretRef is the name of a Kubernetes Secret (in the same namespace)
+                      containing the judge LLM API key. Expected key: API_KEY.
+                    type: string
+                required:
+                - secretRef
+                type: object
               evolution:
                 description: |-
                   Evolution configures the self-evolution loop for this agent.
@@ -801,6 +841,38 @@ spec:
                   - reason
                   - status
                   - type
+                  type: object
+                type: array
+              evalHistory:
+                description: |-
+                  EvalHistory records the last 50 LLM-as-judge quality scores in chronological order.
+                  Oldest entries are dropped when the buffer is full.
+                  Used as the primary quality signal by the threshold tuner and plateau detector.
+                items:
+                  description: EvalHistoryEntry records the quality score from a single
+                    LLM-as-judge evaluation run.
+                  properties:
+                    at:
+                      description: At is when the evaluation ran.
+                      format: date-time
+                      type: string
+                    compositeVersion:
+                      description: CompositeVersion is the agent composite version
+                        that was evaluated.
+                      type: string
+                    qualityScore:
+                      description: QualityScore is the mean judge score for this run
+                        (0.0–1.0).
+                      type: number
+                    verdict:
+                      description: Verdict is "pass" if QualityScore >= MinScore,
+                        "fail" otherwise.
+                      type: string
+                  required:
+                  - at
+                  - compositeVersion
+                  - qualityScore
+                  - verdict
                   type: object
                 type: array
               evolution:

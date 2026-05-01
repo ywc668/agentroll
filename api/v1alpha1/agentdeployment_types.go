@@ -64,6 +64,12 @@ type AgentDeploymentSpec struct {
 	// Disabled by default — opt in explicitly.
 	// +optional
 	Evolution *EvolutionSpec `json:"evolution,omitempty"`
+
+	// Evaluation configures the LLM-as-judge quality scoring layer.
+	// When set, the controller creates an agent-judge-check AnalysisTemplate
+	// that scores canary responses with an LLM and writes quality scores to Langfuse.
+	// +optional
+	Evaluation *EvaluationSpec `json:"evaluation,omitempty"`
 }
 
 // AgentContainerSpec defines the container configuration for the agent.
@@ -314,6 +320,12 @@ type AgentDeploymentStatus struct {
 	// Populated only after the evolution controller has completed at least one evaluation.
 	// +optional
 	Evolution *EvolutionStatus `json:"evolution,omitempty"`
+
+	// EvalHistory records the last 50 LLM-as-judge quality scores in chronological order.
+	// Oldest entries are dropped when the buffer is full.
+	// Used as the primary quality signal by the threshold tuner and plateau detector.
+	// +optional
+	EvalHistory []EvalHistoryEntry `json:"evalHistory,omitempty"`
 }
 
 // AgentDeploymentPhase represents the lifecycle phase of an agent deployment.
@@ -542,6 +554,58 @@ type EvolutionHistoryEntry struct {
 	// (e.g., "Degraded", "Stable"). Empty for periodic triggers.
 	// +optional
 	Phase string `json:"phase,omitempty"`
+}
+
+// ─── Evaluation ──────────────────────────────────────────────────────────────
+
+// EvaluationSpec configures the LLM-as-judge quality scoring layer.
+// When set, the controller creates an agent-judge-check AnalysisTemplate that
+// sends test queries to the canary, scores responses with an LLM judge, and
+// writes numeric quality scores (0.0–1.0) to Langfuse as judge_quality_score.
+type EvaluationSpec struct {
+	// SecretRef is the name of a Kubernetes Secret (in the same namespace)
+	// containing the judge LLM API key. Expected key: API_KEY.
+	SecretRef string `json:"secretRef"`
+
+	// JudgeModel is the LLM model ID used for evaluation.
+	// Defaults to "claude-haiku-4-5-20251001" when empty.
+	// +optional
+	JudgeModel string `json:"judgeModel,omitempty"`
+
+	// JudgeProvider is the LLM API provider.
+	// +kubebuilder:validation:Enum=anthropic;openai
+	// +kubebuilder:default=anthropic
+	// +optional
+	JudgeProvider string `json:"judgeProvider,omitempty"`
+
+	// MinScore is the minimum acceptable mean quality score (0.0–1.0).
+	// The analysis Job exits 0 (pass) if the mean score >= MinScore, 1 (fail) otherwise.
+	// +kubebuilder:default="0.7"
+	// +optional
+	MinScore string `json:"minScore,omitempty"`
+
+	// ConfigMap is the name of a ConfigMap (in the same namespace) holding
+	// evaluation configuration. Supported keys:
+	//   "rubric"       — evaluation criteria text injected as EVAL_RUBRIC
+	//   "test_prompts" — JSON array of test input strings injected as TEST_QUERIES
+	// When absent, the judge runner uses its built-in default rubric and queries.
+	// +optional
+	ConfigMap string `json:"configMap,omitempty"`
+}
+
+// EvalHistoryEntry records the quality score from a single LLM-as-judge evaluation run.
+type EvalHistoryEntry struct {
+	// At is when the evaluation ran.
+	At metav1.Time `json:"at"`
+
+	// CompositeVersion is the agent composite version that was evaluated.
+	CompositeVersion string `json:"compositeVersion"`
+
+	// QualityScore is the mean judge score for this run (0.0–1.0).
+	QualityScore float64 `json:"qualityScore"`
+
+	// Verdict is "pass" if QualityScore >= MinScore, "fail" otherwise.
+	Verdict string `json:"verdict"`
 }
 
 func init() {
