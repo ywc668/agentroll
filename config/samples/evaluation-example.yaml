@@ -1,0 +1,56 @@
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: my-agent-with-judge
+  namespace: default
+spec:
+  container:
+    image: my-agent:v2
+    ports:
+      - containerPort: 8080
+  agentMeta:
+    promptVersion: "v1"
+    modelVersion: "claude-sonnet-4-6"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+        pause:
+          duration: "2m"
+        analysis:
+          templateRef: agent-judge-check   # LLM-as-judge evaluation
+      - setWeight: 100
+
+  # Wires the LLM-as-judge quality scoring layer.
+  # The controller creates agent-judge-check AnalysisTemplate using these settings.
+  evaluation:
+    secretRef: my-llm-secret       # Secret with key: API_KEY
+    judgeModel: claude-haiku-4-5-20251001
+    judgeProvider: anthropic
+    minScore: "0.75"               # 75% quality threshold
+    configMap: my-eval-config      # Optional: rubric + test prompts
+
+  observability:
+    langfuse:
+      endpoint: "http://langfuse.monitoring:3000"
+      secretRef: langfuse-credentials  # Judge scores written here
+
+---
+# Optional ConfigMap with evaluation config
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-eval-config
+  namespace: default
+data:
+  rubric: |
+    Score the agent response based on:
+    1. Accuracy: Does it correctly answer the question? (0=wrong, 10=perfect)
+    2. Tool usage: Did it use the right Kubernetes tools? (penalise guessing without tools)
+    3. Conciseness: No padding or repetition
+  test_prompts: |
+    [
+      "List all running pods in the default namespace",
+      "Are there any failing deployments?",
+      "What is the memory usage of the kube-system pods?"
+    ]

@@ -231,7 +231,7 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// Evolution failures are non-fatal — continue to status update.
 	}
 
-	// Step 5.6: Reconcile eval history — pull new judge_quality_score values from
+	// Step 5.8: Reconcile eval history — pull new judge_quality_score values from
 	// Langfuse into status.evalHistory. Non-fatal.
 	if err := r.reconcileEvalHistory(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile eval history")
