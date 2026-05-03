@@ -66,6 +66,7 @@ const agentDeploymentFinalizer = "agentroll.dev/finalizer"
 var managedAnalysisTemplates = map[string]bool{
 	"agent-quality-check": true,
 	"agent-cost-check":    true,
+	"agent-judge-check":   true,
 }
 
 // Repeated string constants — extracted to satisfy goconst.
@@ -161,6 +162,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
+	// Step 3.1: Reconcile Judge AnalysisTemplate (if spec.evaluation is configured).
+	// Non-fatal — evaluation is optional and must never block rollouts.
+	if err := r.reconcileJudgeTemplate(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile judge AnalysisTemplate")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "EvalError",
+			fmt.Sprintf("judge template reconcile failed: %v", err))
+	}
+
 	// Step 3.5: Reconcile OTel ConfigMap (if enabled)
 	if err := r.reconcileOTelConfig(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile OTel ConfigMap")
@@ -220,6 +229,12 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "EvolutionError",
 			fmt.Sprintf("evolution loop failed: %v", err))
 		// Evolution failures are non-fatal — continue to status update.
+	}
+
+	// Step 5.6: Reconcile eval history — pull new judge_quality_score values from
+	// Langfuse into status.evalHistory. Non-fatal.
+	if err := r.reconcileEvalHistory(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile eval history")
 	}
 
 	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.

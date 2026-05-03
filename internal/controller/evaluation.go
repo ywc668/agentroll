@@ -17,7 +17,6 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -312,8 +311,7 @@ func (r *AgentDeploymentReconciler) fetchJudgeScoresFromLangfuse(
 	if err != nil {
 		return nil, err
 	}
-	creds := base64.StdEncoding.EncodeToString([]byte(publicKey + ":" + secretKey))
-	req.Header.Set("Authorization", "Basic "+creds)
+	req.SetBasicAuth(publicKey, secretKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
