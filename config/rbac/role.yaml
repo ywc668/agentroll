@@ -47,10 +47,21 @@ rules:
   - agentroll.dev
   resources:
   - agentdeployments/status
+  - promptvariants/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - agentroll.dev
+  resources:
+  - promptvariants
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - apps
   resources:
