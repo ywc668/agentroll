@@ -1,0 +1,72 @@
+# PromptVariant holds the candidate prompt for A/B testing.
+# Create this first, then reference it from the AgentDeployment.
+apiVersion: agentroll.dev/v1alpha1
+kind: PromptVariant
+metadata:
+  name: kb-agent-v2-more-structured
+  namespace: default
+spec:
+  agentDeploymentRef: kb-agent
+  parentVersion: "v1"
+  hypothesis: >
+    Adding explicit JSON output format instructions should reduce unstructured
+    responses and improve the judge's accuracy scoring, particularly for
+    tool-use quality metrics.
+  systemPrompt: |
+    You are a Kubernetes knowledge base specialist.
+
+    ALWAYS respond in this structured format:
+    {
+      "answer": "<direct answer to the question>",
+      "confidence": "<high|medium|low>",
+      "tools_used": ["<tool1>", "<tool2>"],
+      "follow_up": "<optional next step>"
+    }
+
+    Use kubectl tools when you need live cluster data. Never guess — if unsure,
+    say so in the confidence field and explain what data you would need.
+
+---
+# AgentDeployment references the PromptVariant via spec.evolution.promptExperiment.
+# The controller auto-starts the experiment on the next reconcile.
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: kb-agent
+  namespace: default
+spec:
+  container:
+    image: my-kb-agent:v1
+    ports:
+      - containerPort: 8080
+  agentMeta:
+    promptVersion: "v1"
+    modelVersion: "claude-sonnet-4-6"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 10
+        pause:
+          duration: "5m"
+        analysis:
+          templateRef: agent-judge-check
+      - setWeight: 100
+
+  evaluation:
+    secretRef: my-llm-secret
+    judgeModel: claude-haiku-4-5-20251001
+    judgeProvider: anthropic
+    minScore: "0.7"
+
+  evolution:
+    enabled: true
+    strategy: all
+    trigger: on-canary-fail
+    promptConfigMap: kb-agent-prompt     # winning prompt written here on promotion
+    promptExperiment: kb-agent-v2-more-structured  # A/B test this variant
+    promptExperimentMinSamples: 5        # require 5 judge scores before deciding
+
+  observability:
+    langfuse:
+      endpoint: "http://langfuse.monitoring:3000"
+      secretRef: langfuse-credentials
