@@ -533,6 +533,24 @@ spec:
                       When humanApproval is also configured, the PR is opened AND the ConfigMap
                       is NOT updated automatically (human review required first).
                     type: string
+                  promptExperiment:
+                    description: |-
+                      PromptExperiment is the name of a PromptVariant (in the same namespace) to
+                      A/B test against the current stable prompt.
+                      When set, the controller creates a per-experiment ConfigMap with the variant's
+                      system prompt and injects it into canary pods as SYSTEM_PROMPT.
+                      Stable pods retain the existing SYSTEM_PROMPT from their creation time.
+                      After PromptExperimentMinSamples judge scores are collected, the controller
+                      runs a Welch's t-test and auto-promotes or rejects the variant.
+                    type: string
+                  promptExperimentMinSamples:
+                    default: 5
+                    description: |-
+                      PromptExperimentMinSamples is the number of LLM-as-judge quality scores to
+                      collect before running the t-test and making an auto-promotion decision.
+                    format: int32
+                    minimum: 3
+                    type: integer
                   schedule:
                     description: |-
                       Schedule is a cron expression that controls how often the evolution loop fires
@@ -983,6 +1001,55 @@ spec:
                 - Degraded
                 - RollingBack
                 type: string
+              promptLineage:
+                description: |-
+                  PromptLineage records the last 20 prompt A/B experiment outcomes in
+                  chronological order. Answers "did this prompt change help?"
+                items:
+                  description: PromptLineageEntry records the outcome of a single
+                    prompt A/B experiment.
+                  properties:
+                    at:
+                      description: At is when the experiment concluded.
+                      format: date-time
+                      type: string
+                    controlMean:
+                      description: ControlMean is the mean LLM-as-judge score for
+                        the control (0.0–1.0).
+                      type: number
+                    hypothesis:
+                      description: Hypothesis is why the variant was expected to improve
+                        quality.
+                      type: string
+                    outcome:
+                      description: Outcome is "promoted" if the variant won, "rejected"
+                        otherwise.
+                      type: string
+                    pValue:
+                      description: PValue is the Welch's t-test p-value (< 0.05 =
+                        statistically significant).
+                      type: number
+                    parentVersion:
+                      description: ParentVersion is the prompt version the variant
+                        was derived from.
+                      type: string
+                    variantMean:
+                      description: VariantMean is the mean LLM-as-judge score for
+                        the variant (0.0–1.0).
+                      type: number
+                    variantName:
+                      description: VariantName is the name of the PromptVariant that
+                        was tested.
+                      type: string
+                  required:
+                  - at
+                  - controlMean
+                  - outcome
+                  - pValue
+                  - variantMean
+                  - variantName
+                  type: object
+                type: array
               stableVersion:
                 description: StableVersion is the currently stable (fully rolled out)
                   composite version.

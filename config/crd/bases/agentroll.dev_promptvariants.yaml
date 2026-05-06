@@ -1,0 +1,137 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: promptvariants.agentroll.dev
+spec:
+  group: agentroll.dev
+  names:
+    kind: PromptVariant
+    listKind: PromptVariantList
+    plural: promptvariants
+    singular: promptvariant
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.agentDeploymentRef
+      name: Agent
+      type: string
+    - jsonPath: .status.pValue
+      name: P-Value
+      type: number
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          PromptVariant is the Schema for the promptvariants API.
+          It holds a candidate system prompt for A/B testing against the current stable prompt.
+          The AgentDeploymentReconciler drives the experiment lifecycle automatically when
+          the parent AgentDeployment's spec.evolution.promptExperiment references this resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PromptVariantSpec defines the desired state of a prompt A/B
+              experiment.
+            properties:
+              agentDeploymentRef:
+                description: |-
+                  AgentDeploymentRef is the name of the AgentDeployment (in the same namespace)
+                  that this variant is being tested against.
+                type: string
+              hypothesis:
+                description: |-
+                  Hypothesis describes why this variant is expected to perform better.
+                  Recorded in the prompt lineage for future reference.
+                type: string
+              parentVersion:
+                description: |-
+                  ParentVersion is the prompt version this variant was derived from.
+                  Recorded in the AgentDeployment's prompt lineage for traceability.
+                type: string
+              systemPrompt:
+                description: SystemPrompt is the candidate system prompt text to evaluate.
+                type: string
+            required:
+            - agentDeploymentRef
+            - systemPrompt
+            type: object
+          status:
+            description: PromptVariantStatus reflects the observed state of the prompt
+              experiment.
+            properties:
+              controlMeanScore:
+                description: ControlMeanScore is the mean of the control (stable)
+                  scores used for comparison.
+                type: number
+              experimentStartedAt:
+                description: |-
+                  ExperimentStartedAt is when the experiment transitioned from Pending to Testing.
+                  Used to partition eval history scores into control (before) and variant (after).
+                format: date-time
+                type: string
+              message:
+                description: Message is a human-readable summary of the experiment
+                  outcome.
+                type: string
+              pValue:
+                description: |-
+                  PValue is the Welch's t-test p-value comparing variant vs control scores.
+                  Values < 0.05 indicate statistically significant difference.
+                type: number
+              phase:
+                description: Phase is the current experiment lifecycle stage.
+                enum:
+                - Pending
+                - Testing
+                - Promoted
+                - Rejected
+                type: string
+              promotedAt:
+                description: PromotedAt is when the variant was promoted to stable.
+                format: date-time
+                type: string
+              rejectedAt:
+                description: RejectedAt is when the variant was rejected.
+                format: date-time
+                type: string
+              variantMeanScore:
+                description: VariantMeanScore is the mean of VariantScores. Populated
+                  after the t-test runs.
+                type: number
+              variantScores:
+                description: |-
+                  VariantScores is the list of LLM-as-judge quality scores collected while Testing.
+                  Scores are 0.0–1.0; collected from status.evalHistory of the AgentDeployment.
+                items:
+                  type: number
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

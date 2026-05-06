@@ -326,6 +326,11 @@ type AgentDeploymentStatus struct {
 	// Used as the primary quality signal by the threshold tuner and plateau detector.
 	// +optional
 	EvalHistory []EvalHistoryEntry `json:"evalHistory,omitempty"`
+
+	// PromptLineage records the last 20 prompt A/B experiment outcomes in
+	// chronological order. Answers "did this prompt change help?"
+	// +optional
+	PromptLineage []PromptLineageEntry `json:"promptLineage,omitempty"`
 }
 
 // AgentDeploymentPhase represents the lifecycle phase of an agent deployment.
@@ -460,6 +465,23 @@ type EvolutionSpec struct {
 	// is NOT updated automatically (human review required first).
 	// +optional
 	PromptConfigMap string `json:"promptConfigMap,omitempty"`
+
+	// PromptExperiment is the name of a PromptVariant (in the same namespace) to
+	// A/B test against the current stable prompt.
+	// When set, the controller creates a per-experiment ConfigMap with the variant's
+	// system prompt and injects it into canary pods as SYSTEM_PROMPT.
+	// Stable pods retain the existing SYSTEM_PROMPT from their creation time.
+	// After PromptExperimentMinSamples judge scores are collected, the controller
+	// runs a Welch's t-test and auto-promotes or rejects the variant.
+	// +optional
+	PromptExperiment string `json:"promptExperiment,omitempty"`
+
+	// PromptExperimentMinSamples is the number of LLM-as-judge quality scores to
+	// collect before running the t-test and making an auto-promotion decision.
+	// +kubebuilder:validation:Minimum=3
+	// +kubebuilder:default=5
+	// +optional
+	PromptExperimentMinSamples *int32 `json:"promptExperimentMinSamples,omitempty"`
 }
 
 // EvolutionOptimizerSpec configures the LLM used by the prompt-optimizer and
@@ -606,6 +628,37 @@ type EvalHistoryEntry struct {
 
 	// Verdict is "pass" if QualityScore >= MinScore, "fail" otherwise.
 	Verdict string `json:"verdict"`
+}
+
+// ─── Prompt Lineage ──────────────────────────────────────────────────────────
+
+// PromptLineageEntry records the outcome of a single prompt A/B experiment.
+type PromptLineageEntry struct {
+	// VariantName is the name of the PromptVariant that was tested.
+	VariantName string `json:"variantName"`
+
+	// ParentVersion is the prompt version the variant was derived from.
+	// +optional
+	ParentVersion string `json:"parentVersion,omitempty"`
+
+	// Hypothesis is why the variant was expected to improve quality.
+	// +optional
+	Hypothesis string `json:"hypothesis,omitempty"`
+
+	// VariantMean is the mean LLM-as-judge score for the variant (0.0–1.0).
+	VariantMean float64 `json:"variantMean"`
+
+	// ControlMean is the mean LLM-as-judge score for the control (0.0–1.0).
+	ControlMean float64 `json:"controlMean"`
+
+	// PValue is the Welch's t-test p-value (< 0.05 = statistically significant).
+	PValue float64 `json:"pValue"`
+
+	// Outcome is "promoted" if the variant won, "rejected" otherwise.
+	Outcome string `json:"outcome"`
+
+	// At is when the experiment concluded.
+	At metav1.Time `json:"at"`
 }
 
 func init() {
