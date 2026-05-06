@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1163,7 +1165,22 @@ func buildCompositeVersion(agentDeploy *agentrollv1alpha1.AgentDeployment) strin
 		model = "default"
 	}
 	imageTag := extractImageTag(agentDeploy.Spec.Container.Image)
-	return fmt.Sprintf("%s.%s.%s", prompt, model, imageTag)
+	if len(meta.ToolDependencies) == 0 {
+		return fmt.Sprintf("%s.%s.%s", prompt, model, imageTag)
+	}
+	return fmt.Sprintf("%s.%s.%s.%s", prompt, model, imageTag, toolsHashFromDeps(meta.ToolDependencies))
+}
+
+// toolsHashFromDeps computes an 8-hex-char fingerprint of the tool set by sorting
+// "name@version" strings and SHA-256 hashing them. Order-independent and stable.
+func toolsHashFromDeps(deps []agentrollv1alpha1.ToolDependency) string {
+	parts := make([]string, 0, len(deps))
+	for _, d := range deps {
+		parts = append(parts, d.Name+"@"+d.Version)
+	}
+	sort.Strings(parts)
+	h := sha256.Sum256([]byte(strings.Join(parts, ",")))
+	return fmt.Sprintf("%x", h[:4])
 }
 
 // buildPodSpec constructs the Pod spec, optionally injecting an OTel sidecar.
