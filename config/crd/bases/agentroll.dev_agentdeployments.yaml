@@ -575,6 +575,23 @@ spec:
                     - model-upgrader
                     - all
                     type: string
+                  toolExperiment:
+                    description: |-
+                      ToolExperiment is the name of a ToolExperiment (in the same namespace) to
+                      A/B test against the current stable tool configuration.
+                      When set, the controller injects additional tools or removes declared tools
+                      from canary pods per the experiment spec.
+                      After ToolExperimentMinSamples judge scores are collected, the controller
+                      runs a Welch's t-test and auto-promotes or rejects the experiment.
+                    type: string
+                  toolExperimentMinSamples:
+                    default: 5
+                    description: |-
+                      ToolExperimentMinSamples is the number of LLM-as-judge quality scores to
+                      collect before running the t-test and making an auto-promotion decision.
+                    format: int32
+                    minimum: 3
+                    type: integer
                   trigger:
                     default: on-canary-fail
                     description: |-
@@ -1054,6 +1071,63 @@ spec:
                 description: StableVersion is the currently stable (fully rolled out)
                   composite version.
                 type: string
+              toolLineage:
+                description: |-
+                  ToolLineage records the last 20 tool A/B experiment outcomes in
+                  chronological order. Answers "did this tool configuration change help?"
+                items:
+                  description: ToolLineageEntry records the outcome of a single tool
+                    A/B experiment.
+                  properties:
+                    additionalTools:
+                      description: AdditionalTools lists the tool names that were
+                        added during the experiment.
+                      items:
+                        type: string
+                      type: array
+                    at:
+                      description: At is when the experiment concluded.
+                      format: date-time
+                      type: string
+                    controlMean:
+                      description: ControlMean is the mean LLM-as-judge score for
+                        the control (0.0–1.0).
+                      type: number
+                    experimentName:
+                      description: ExperimentName is the name of the ToolExperiment
+                        that was tested.
+                      type: string
+                    hypothesis:
+                      description: Hypothesis is why this tool configuration was expected
+                        to improve quality.
+                      type: string
+                    outcome:
+                      description: Outcome is "promoted" if the experiment won, "rejected"
+                        otherwise.
+                      type: string
+                    pValue:
+                      description: PValue is the Welch's t-test p-value (< 0.05 =
+                        statistically significant).
+                      type: number
+                    removedTools:
+                      description: RemovedTools lists the tool names that were removed
+                        during the experiment.
+                      items:
+                        type: string
+                      type: array
+                    variantMean:
+                      description: VariantMean is the mean LLM-as-judge score for
+                        the variant (0.0–1.0).
+                      type: number
+                  required:
+                  - at
+                  - controlMean
+                  - experimentName
+                  - outcome
+                  - pValue
+                  - variantMean
+                  type: object
+                type: array
             type: object
         type: object
     served: true

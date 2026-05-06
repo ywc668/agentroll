@@ -331,6 +331,11 @@ type AgentDeploymentStatus struct {
 	// chronological order. Answers "did this prompt change help?"
 	// +optional
 	PromptLineage []PromptLineageEntry `json:"promptLineage,omitempty"`
+
+	// ToolLineage records the last 20 tool A/B experiment outcomes in
+	// chronological order. Answers "did this tool configuration change help?"
+	// +optional
+	ToolLineage []ToolLineageEntry `json:"toolLineage,omitempty"`
 }
 
 // AgentDeploymentPhase represents the lifecycle phase of an agent deployment.
@@ -482,6 +487,22 @@ type EvolutionSpec struct {
 	// +kubebuilder:default=5
 	// +optional
 	PromptExperimentMinSamples *int32 `json:"promptExperimentMinSamples,omitempty"`
+
+	// ToolExperiment is the name of a ToolExperiment (in the same namespace) to
+	// A/B test against the current stable tool configuration.
+	// When set, the controller injects additional tools or removes declared tools
+	// from canary pods per the experiment spec.
+	// After ToolExperimentMinSamples judge scores are collected, the controller
+	// runs a Welch's t-test and auto-promotes or rejects the experiment.
+	// +optional
+	ToolExperiment string `json:"toolExperiment,omitempty"`
+
+	// ToolExperimentMinSamples is the number of LLM-as-judge quality scores to
+	// collect before running the t-test and making an auto-promotion decision.
+	// +kubebuilder:validation:Minimum=3
+	// +kubebuilder:default=5
+	// +optional
+	ToolExperimentMinSamples *int32 `json:"toolExperimentMinSamples,omitempty"`
 }
 
 // EvolutionOptimizerSpec configures the LLM used by the prompt-optimizer and
@@ -655,6 +676,41 @@ type PromptLineageEntry struct {
 	PValue float64 `json:"pValue"`
 
 	// Outcome is "promoted" if the variant won, "rejected" otherwise.
+	Outcome string `json:"outcome"`
+
+	// At is when the experiment concluded.
+	At metav1.Time `json:"at"`
+}
+
+// ─── Tool Lineage ─────────────────────────────────────────────────────────────
+
+// ToolLineageEntry records the outcome of a single tool A/B experiment.
+type ToolLineageEntry struct {
+	// ExperimentName is the name of the ToolExperiment that was tested.
+	ExperimentName string `json:"experimentName"`
+
+	// AdditionalTools lists the tool names that were added during the experiment.
+	// +optional
+	AdditionalTools []string `json:"additionalTools,omitempty"`
+
+	// RemovedTools lists the tool names that were removed during the experiment.
+	// +optional
+	RemovedTools []string `json:"removedTools,omitempty"`
+
+	// Hypothesis is why this tool configuration was expected to improve quality.
+	// +optional
+	Hypothesis string `json:"hypothesis,omitempty"`
+
+	// VariantMean is the mean LLM-as-judge score for the variant (0.0–1.0).
+	VariantMean float64 `json:"variantMean"`
+
+	// ControlMean is the mean LLM-as-judge score for the control (0.0–1.0).
+	ControlMean float64 `json:"controlMean"`
+
+	// PValue is the Welch's t-test p-value (< 0.05 = statistically significant).
+	PValue float64 `json:"pValue"`
+
+	// Outcome is "promoted" if the experiment won, "rejected" otherwise.
 	Outcome string `json:"outcome"`
 
 	// At is when the experiment concluded.
