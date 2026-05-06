@@ -89,6 +89,8 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=agentroll.dev,resources=promptvariants,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=agentroll.dev,resources=promptvariants/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=argoproj.io,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=argoproj.io,resources=analysistemplates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -235,6 +237,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Langfuse into status.evalHistory. Non-fatal.
 	if err := r.reconcileEvalHistory(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile eval history")
+	}
+
+	// Step 5.9: Reconcile prompt experiment — advance A/B test state machine.
+	// Non-fatal — experiment failures must never block rollouts.
+	if err := r.reconcilePromptExperiment(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile prompt experiment")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "PromptExperimentError",
+			fmt.Sprintf("prompt experiment failed: %v", err))
 	}
 
 	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.
@@ -1247,20 +1257,28 @@ func buildPodSpec(agentDeploy *agentrollv1alpha1.AgentDeployment) corev1.PodSpec
 		})
 	}
 
-	// Inject SYSTEM_PROMPT from the evolution PromptConfigMap when configured.
-	// The prompt-optimizer strategy writes updated prompts here so the next pod
-	// restart picks up the new prompt without rebuilding the image.
-	if agentDeploy.Spec.Evolution != nil && agentDeploy.Spec.Evolution.PromptConfigMap != "" {
+	// Inject SYSTEM_PROMPT: use the per-experiment ConfigMap when a prompt A/B test
+	// is active (canary pods get the variant prompt), fall back to the stable
+	// promptConfigMap otherwise.
+	var promptCMName string
+	if agentDeploy.Spec.Evolution != nil {
+		if agentDeploy.Spec.Evolution.PromptExperiment != "" {
+			// A/B test active: canary pods read from the variant ConfigMap.
+			// Stable pods retain the SYSTEM_PROMPT value baked in at their creation time.
+			promptCMName = variantConfigMapName(agentDeploy.Name)
+		} else if agentDeploy.Spec.Evolution.PromptConfigMap != "" {
+			promptCMName = agentDeploy.Spec.Evolution.PromptConfigMap
+		}
+	}
+	if promptCMName != "" {
 		optional := true
 		containers[0].Env = append(containers[0].Env, corev1.EnvVar{
 			Name: "SYSTEM_PROMPT",
 			ValueFrom: &corev1.EnvVarSource{
 				ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: agentDeploy.Spec.Evolution.PromptConfigMap,
-					},
-					Key:      "system_prompt",
-					Optional: &optional,
+					LocalObjectReference: corev1.LocalObjectReference{Name: promptCMName},
+					Key:                  "system_prompt",
+					Optional:             &optional,
 				},
 			},
 		})
