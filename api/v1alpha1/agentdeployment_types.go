@@ -624,6 +624,52 @@ type EvolutionStatus struct {
 	// Oldest entries are dropped when the buffer is full.
 	// +optional
 	History []EvolutionHistoryEntry `json:"history,omitempty"`
+
+	// OptimizationGeneration is the number of successful optimization cycles completed.
+	// Incremented each time a prompt experiment or tool experiment is promoted.
+	// +optional
+	OptimizationGeneration int32 `json:"optimizationGeneration,omitempty"`
+
+	// Scorecard summarises the lifetime effectiveness of the self-evolution loop.
+	// Recomputed on every reconcile from PromptLineage, ToolLineage, and EvalHistory.
+	// +optional
+	Scorecard *OptimizationScorecard `json:"scorecard,omitempty"`
+}
+
+// OptimizationScorecard summarises the lifetime effectiveness of the
+// self-evolution loop for this AgentDeployment.
+type OptimizationScorecard struct {
+	// PromptPromotions is the total number of successful prompt experiments.
+	PromptPromotions int32 `json:"promptPromotions"`
+
+	// PromptRejections is the total number of failed prompt experiments.
+	PromptRejections int32 `json:"promptRejections"`
+
+	// ToolPromotions is the total number of successful tool experiments.
+	ToolPromotions int32 `json:"toolPromotions"`
+
+	// ToolRejections is the total number of failed tool experiments.
+	ToolRejections int32 `json:"toolRejections"`
+
+	// QualityTrend is the direction of recent quality: "improving", "degrading", or "stable".
+	// Computed by comparing the mean of the 3 most recent EvalHistory entries
+	// against the 3 entries before them. "stable" when fewer than 6 entries exist.
+	// +optional
+	QualityTrend string `json:"qualityTrend,omitempty"`
+
+	// MeanQualityLast7Days is the mean LLM-as-judge score over the last 7 days of
+	// eval history. 0.0 when there are no entries in the window.
+	// +optional
+	MeanQualityLast7Days float64 `json:"meanQualityLast7Days,omitempty"`
+
+	// RegressionDetected is true when quality dropped >10% in the post-promotion
+	// window relative to the pre-promotion baseline, using the most recent promotion
+	// across PromptLineage and ToolLineage as the pivot.
+	// +optional
+	RegressionDetected bool `json:"regressionDetected,omitempty"`
+
+	// UpdatedAt is when the scorecard was last recomputed.
+	UpdatedAt metav1.Time `json:"updatedAt"`
 }
 
 // EvolutionHistoryEntry records a single execution of the evolution loop.

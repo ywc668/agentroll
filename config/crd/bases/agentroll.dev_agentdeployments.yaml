@@ -645,8 +645,7 @@ spec:
                     default: 30
                     description: |-
                       SnapshotIntervalMinutes is how often (in minutes) the controller takes a
-                      memory snapshot. Snapshots are only taken when new EvalHistory entries
-                      have been recorded since the last snapshot.
+                      memory snapshot, provided at least one EvalHistory entry exists.
                     format: int32
                     minimum: 1
                     type: integer
@@ -1009,11 +1008,70 @@ spec:
                       Populated only when trigger is "periodic" or "both".
                     format: date-time
                     type: string
+                  optimizationGeneration:
+                    description: |-
+                      OptimizationGeneration is the number of successful optimization cycles completed.
+                      Incremented each time a prompt experiment or tool experiment is promoted.
+                    format: int32
+                    type: integer
                   proposalCount:
                     description: ProposalCount is the total number of evolution proposals
                       generated.
                     format: int32
                     type: integer
+                  scorecard:
+                    description: |-
+                      Scorecard summarises the lifetime effectiveness of the self-evolution loop.
+                      Recomputed on every reconcile from PromptLineage, ToolLineage, and EvalHistory.
+                    properties:
+                      meanQualityLast7Days:
+                        description: |-
+                          MeanQualityLast7Days is the mean LLM-as-judge score over the last 7 days of
+                          eval history. 0.0 when there are no entries in the window.
+                        type: number
+                      promptPromotions:
+                        description: PromptPromotions is the total number of successful
+                          prompt experiments.
+                        format: int32
+                        type: integer
+                      promptRejections:
+                        description: PromptRejections is the total number of failed
+                          prompt experiments.
+                        format: int32
+                        type: integer
+                      qualityTrend:
+                        description: |-
+                          QualityTrend is the direction of recent quality: "improving", "degrading", or "stable".
+                          Computed by comparing the mean of the 3 most recent EvalHistory entries
+                          against the 3 entries before them. "stable" when fewer than 6 entries exist.
+                        type: string
+                      regressionDetected:
+                        description: |-
+                          RegressionDetected is true when quality dropped >10% in the post-promotion
+                          window relative to the pre-promotion baseline, using the most recent promotion
+                          across PromptLineage and ToolLineage as the pivot.
+                        type: boolean
+                      toolPromotions:
+                        description: ToolPromotions is the total number of successful
+                          tool experiments.
+                        format: int32
+                        type: integer
+                      toolRejections:
+                        description: ToolRejections is the total number of failed
+                          tool experiments.
+                        format: int32
+                        type: integer
+                      updatedAt:
+                        description: UpdatedAt is when the scorecard was last recomputed.
+                        format: date-time
+                        type: string
+                    required:
+                    - promptPromotions
+                    - promptRejections
+                    - toolPromotions
+                    - toolRejections
+                    - updatedAt
+                    type: object
                   tunedThresholds:
                     additionalProperties:
                       type: string
