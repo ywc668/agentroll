@@ -276,6 +276,15 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			fmt.Sprintf("memory lifecycle reconcile failed: %v", err))
 	}
 
+	// Step 5.12: Reconcile optimization scorecard — recompute summary stats and
+	// detect post-promotion regressions. Non-fatal — scorecard failures must never
+	// block rollouts.
+	if err := r.reconcileOptimizationScorecard(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile optimization scorecard")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "OptimizationScorecardError",
+			fmt.Sprintf("optimization scorecard failed: %v", err))
+	}
+
 	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.
 	prevPhase := agentDeploy.Status.Phase
 	if err := r.updateStatus(ctx, agentDeploy, compositeVersion); err != nil {

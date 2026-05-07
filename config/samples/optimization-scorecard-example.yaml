@@ -1,0 +1,53 @@
+# Continuous Optimization Loop example — evolution scorecard + regression detection.
+# Apply with: kubectl apply -f optimization-scorecard-example.yaml
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: my-agent
+  namespace: default
+spec:
+  container:
+    image: ghcr.io/agentroll/k8s-health-agent:v1.2.0
+  agentMeta:
+    promptVersion: "v3"
+    modelVersion: "claude-sonnet-4-5"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+      - pause:
+          duration: 5m
+      - setWeight: 50
+      - pause:
+          duration: 10m
+  # LLM-as-judge evaluation (populates status.evalHistory, which the scorecard reads)
+  evaluation:
+    judgeModel: claude-haiku-4-5-20251001
+    judgeProvider: anthropic
+    secretRef: anthropic-credentials
+    minScore: "0.7"
+  # Self-evolution loop (prompt optimizer + threshold tuner feed PromptLineage and EvolutionHistory)
+  evolution:
+    enabled: true
+    strategy: all
+    trigger: on-canary-fail
+    optimizer:
+      model: claude-haiku-4-5-20251001
+      provider: anthropic
+      secretRef: anthropic-credentials
+  observability:
+    langfuse:
+      endpoint: "https://cloud.langfuse.com"
+      secretRef: langfuse-credentials
+# After applying, inspect the scorecard:
+#   kubectl get agentdeployment my-agent \
+#     -o jsonpath='{.status.evolution.scorecard}' | jq .
+#
+# Scorecard fields:
+#   promptPromotions / promptRejections — lifetime A/B test outcomes
+#   toolPromotions / toolRejections     — lifetime tool experiment outcomes
+#   optimizationGeneration              — total successful optimization cycles
+#   qualityTrend                        — "improving" | "degrading" | "stable"
+#   meanQualityLast7Days                — trailing 7-day quality window
+#   regressionDetected                  — true if post-promotion quality dropped >10%

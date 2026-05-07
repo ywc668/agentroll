@@ -256,6 +256,7 @@ func (r *AgentDeploymentReconciler) promoteVariant(
 
 	r.Recorder.Event(agentDeploy, corev1.EventTypeNormal, "PromptVariantPromoted",
 		variant.Status.Message)
+	incrementOptimizationGeneration(agentDeploy)
 	return nil
 }
 

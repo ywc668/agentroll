@@ -186,6 +186,7 @@ func (r *AgentDeploymentReconciler) promoteToolExperiment(
 	r.Recorder.Eventf(agentDeploy, corev1.EventTypeNormal, "ToolExperimentPromoted",
 		"Tool experiment %q promoted (p=%.4f). Update spec.agentMeta.toolDependencies to adopt changes permanently.",
 		experiment.Name, experiment.Status.PValue)
+	incrementOptimizationGeneration(agentDeploy)
 	return nil
 }
 
