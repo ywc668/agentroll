@@ -268,6 +268,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			fmt.Sprintf("tool experiment failed: %v", err))
 	}
 
+	// Step 5.11: Reconcile memory lifecycle — take periodic quality snapshots and
+	// detect memory drift. Non-fatal — memory tracking must never block rollouts.
+	if err := r.reconcileMemoryLifecycle(ctx, agentDeploy, compositeVersion); err != nil {
+		log.Error(err, "failed to reconcile memory lifecycle")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "MemoryLifecycleError",
+			fmt.Sprintf("memory lifecycle reconcile failed: %v", err))
+	}
+
 	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.
 	prevPhase := agentDeploy.Status.Phase
 	if err := r.updateStatus(ctx, agentDeploy, compositeVersion); err != nil {

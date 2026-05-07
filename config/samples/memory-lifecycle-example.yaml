@@ -1,0 +1,39 @@
+# Memory Lifecycle example — periodic quality snapshots + drift detection for my-agent.
+# Apply with: kubectl apply -f memory-lifecycle-example.yaml
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: my-agent
+  namespace: default
+spec:
+  container:
+    image: ghcr.io/agentroll/k8s-health-agent:v1.2.0
+  agentMeta:
+    promptVersion: "v3"
+    modelVersion: "claude-sonnet-4-5"
+  rollout:
+    strategy: canary
+    canarySteps:
+      - setWeight: 20
+      - pause:
+          duration: 5m
+      - setWeight: 50
+      - pause:
+          duration: 10m
+  # Evaluate agent quality with LLM-as-judge
+  evaluation:
+    judgeModel: claude-haiku-4-5-20251001
+    judgeProvider: anthropic
+    secretRef: anthropic-credentials
+    minScore: "0.7"
+  # Track memory quality over time and alert on drift
+  memory:
+    snapshotEnabled: true
+    snapshotIntervalMinutes: 30
+    maxSnapshots: 10
+    driftThreshold: "0.10"
+    rollbackOnDrift: true
+  observability:
+    langfuse:
+      secretRef: langfuse-credentials
