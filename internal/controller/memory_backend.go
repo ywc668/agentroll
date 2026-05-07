@@ -269,7 +269,7 @@ func mem0ExportMemory(ctx context.Context, endpoint, sessionID, apiKey string) (
 	if err != nil {
 		return nil, fmt.Errorf("mem0ExportMemory: read response: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("mem0ExportMemory: unexpected status %d: %s",
 			resp.StatusCode, string(body))
 	}
@@ -300,8 +300,11 @@ func mem0ImportMemory(ctx context.Context, endpoint, sessionID, apiKey string, d
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if readErr != nil {
+			return fmt.Errorf("mem0ImportMemory: unexpected status %d (body unreadable: %v)", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("mem0ImportMemory: unexpected status %d: %s",
 			resp.StatusCode, string(body))
 	}

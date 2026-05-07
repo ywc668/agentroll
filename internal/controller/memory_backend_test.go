@@ -10,6 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
 )
 
 func TestMemorySnapshotSecretName(t *testing.T) {
@@ -128,5 +135,67 @@ func TestMem0ImportMemory_204Accepted(t *testing.T) {
 	err := mem0ImportMemory(context.Background(), srv.URL, "", "", []byte("{}"))
 	if err != nil {
 		t.Fatalf("unexpected error for 204: %v", err)
+	}
+}
+
+func makeTestScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	_ = agentrollv1alpha1.AddToScheme(s)
+	return s
+}
+
+func TestReadBackendAPIKey_Success(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mem0-creds", Namespace: "default"},
+		Data:       map[string][]byte{"MEM0_API_KEY": []byte("super-secret")},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(makeTestScheme()).WithObjects(secret).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient}
+
+	key, err := r.readBackendAPIKey(context.Background(), "default", "mem0-creds")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "super-secret" {
+		t.Errorf("got key %q, want %q", key, "super-secret")
+	}
+}
+
+func TestReadBackendAPIKey_MissingKey(t *testing.T) {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mem0-creds", Namespace: "default"},
+		Data:       map[string][]byte{"WRONG_KEY": []byte("value")},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(makeTestScheme()).WithObjects(secret).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient}
+
+	_, err := r.readBackendAPIKey(context.Background(), "default", "mem0-creds")
+	if err == nil {
+		t.Fatal("expected error for missing MEM0_API_KEY, got nil")
+	}
+}
+
+func TestRestoreMemorySnapshot_NoSnapshot(t *testing.T) {
+	// restoreMemorySnapshot must be a no-op when no snapshot has been recorded
+	fakeClient := fake.NewClientBuilder().WithScheme(makeTestScheme()).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient}
+
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-agent", Namespace: "default"},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			Memory: &agentrollv1alpha1.MemorySpec{
+				Backend: &agentrollv1alpha1.MemoryBackendSpec{
+					Endpoint:  "http://mem0.svc",
+					SecretRef: "mem0-creds",
+				},
+			},
+		},
+		// Status.Memory is nil — no prior snapshot
+	}
+
+	err := r.restoreMemorySnapshot(context.Background(), ad)
+	if err != nil {
+		t.Fatalf("expected no error for missing snapshot, got: %v", err)
 	}
 }
