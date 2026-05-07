@@ -672,26 +672,31 @@ func (r *AgentDeploymentReconciler) fetchLangfuseScores(
 		return nil, fmt.Errorf("parsing Langfuse scores response: %w", err)
 	}
 
-	// Normalise score names to threshold keys.
-	normalise := func(name string) string {
-		switch name {
-		case "avg_latency":
-			return "max_latency_ms"
-		case "tool_success_rate":
-			return "min_success_rate"
-		case "hallucination_rate":
-			return "max_hallucination_rate"
-		default:
-			return name
-		}
-	}
-
 	out := map[string][]float64{}
 	for _, s := range result.Data {
-		key := normalise(s.Name)
+		key := normalizeLangfuseScoreName(s.Name)
 		out[key] = append(out[key], s.Value)
 	}
 	return out, nil
+}
+
+// normalizeLangfuseScoreName converts a Langfuse score name to its threshold key.
+// Used by the threshold tuner and tool check template.
+func normalizeLangfuseScoreName(name string) string {
+	switch name {
+	case "avg_latency":
+		return "max_latency_ms"
+	case "tool_success_rate":
+		return "min_success_rate"
+	case "hallucination_rate":
+		return "max_hallucination_rate"
+	default:
+		if strings.HasPrefix(name, "tool_success_rate_") {
+			// e.g. tool_success_rate_kubectl_get → min_tool_success_rate_kubectl_get
+			return "min_" + name
+		}
+		return name
+	}
 }
 
 // ─── 7.4 Model Upgrader ──────────────────────────────────────────────────────

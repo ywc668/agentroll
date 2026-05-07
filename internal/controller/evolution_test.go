@@ -254,3 +254,25 @@ func TestAppendEvolutionHistory_ExactlyAtLimit(t *testing.T) {
 		t.Errorf("expected newest to be prompt-optimizer, got %q", st.History[19].Strategy)
 	}
 }
+
+// ── normalizeLangfuseScoreName ────────────────────────────────────────────────
+
+func TestNormalizeLangfuseScoreName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"avg_latency", "max_latency_ms"},
+		{"tool_success_rate", "min_success_rate"},
+		{"hallucination_rate", "max_hallucination_rate"},
+		{"tool_success_rate_kubectl_get", "min_tool_success_rate_kubectl_get"},
+		{"tool_success_rate_kubectl-describe", "min_tool_success_rate_kubectl-describe"},
+		{"custom_quality_score", "custom_quality_score"},
+	}
+	for _, tc := range tests {
+		got := normalizeLangfuseScoreName(tc.input)
+		if got != tc.expected {
+			t.Errorf("normalizeLangfuseScoreName(%q) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
+}

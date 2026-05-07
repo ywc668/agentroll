@@ -1,0 +1,5 @@
+FROM python:3.12-slim
+WORKDIR /app
+COPY tool_checker.py .
+RUN pip install --no-cache-dir requests
+ENTRYPOINT ["python", "tool_checker.py"]
