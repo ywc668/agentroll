@@ -136,7 +136,6 @@ func memoryCheckJobSpec(
 		{Name: "JUDGE_MODEL", Value: judgeModel},
 		{Name: "JUDGE_PROVIDER", Value: judgeProvider},
 		{Name: "MEM0_API_URL", Value: backend.Endpoint},
-		{Name: "AGENT_SESSION_ID", Value: backend.SessionID},
 		{
 			Name: "API_KEY",
 			ValueFrom: &corev1.EnvVarSource{
@@ -146,6 +145,13 @@ func memoryCheckJobSpec(
 				},
 			},
 		},
+	}
+
+	if backend.SessionID != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "AGENT_SESSION_ID",
+			Value: backend.SessionID,
+		})
 	}
 
 	if lf != nil && lf.SecretRef != "" {

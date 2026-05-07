@@ -70,6 +70,7 @@ var managedAnalysisTemplates = map[string]bool{
 	"agent-cost-check":    true,
 	"agent-judge-check":   true,
 	"agent-tool-check":    true,
+	"agent-memory-check":  true,
 }
 
 // Repeated string constants — extracted to satisfy goconst.

@@ -159,3 +159,15 @@ func TestMemoryCheckJobSpec_Mem0EnvVars(t *testing.T) {
 		t.Errorf("expected AGENT_SESSION_ID=agent-sess-1, got %q", got)
 	}
 }
+
+func TestMemoryCheckJobSpec_NoSessionID(t *testing.T) {
+	ad := makeMemoryCheckAgentDeploy()
+	ad.Spec.Memory.Backend.SessionID = "" // empty session ID
+	spec := memoryCheckJobSpec(ad, nil)
+
+	for _, e := range spec.Template.Spec.Containers[0].Env {
+		if e.Name == "AGENT_SESSION_ID" {
+			t.Error("expected AGENT_SESSION_ID to be absent when SessionID is empty")
+		}
+	}
+}
