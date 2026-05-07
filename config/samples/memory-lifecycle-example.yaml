@@ -14,7 +14,7 @@ spec:
     modelVersion: "claude-sonnet-4-5"
   rollout:
     strategy: canary
-    canarySteps:
+    steps:
       - setWeight: 20
       - pause:
           duration: 5m
@@ -36,4 +36,5 @@ spec:
     rollbackOnDrift: true
   observability:
     langfuse:
+      endpoint: "https://cloud.langfuse.com"
       secretRef: langfuse-credentials

@@ -85,8 +85,7 @@ type MemorySpec struct {
 	SnapshotEnabled bool `json:"snapshotEnabled"`
 
 	// SnapshotIntervalMinutes is how often (in minutes) the controller takes a
-	// memory snapshot. Snapshots are only taken when new EvalHistory entries
-	// have been recorded since the last snapshot.
+	// memory snapshot, provided at least one EvalHistory entry exists.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:default=30
 	// +optional
