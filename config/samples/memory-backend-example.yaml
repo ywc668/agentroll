@@ -1,0 +1,69 @@
+# Memory Backend example — Mem0 integration with pre-canary snapshot + rollback.
+# Apply with: kubectl apply -f memory-backend-example.yaml
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: my-agent
+  namespace: default
+spec:
+  container:
+    image: ghcr.io/agentroll/k8s-health-agent:v1.2.0
+  agentMeta:
+    promptVersion: "v3"
+    modelVersion: "claude-sonnet-4-6"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+      - pause:
+          duration: 5m
+      - setWeight: 50
+      - pause:
+          duration: 10m
+  # LLM-as-judge evaluation — required for agent-memory-check AnalysisTemplate
+  evaluation:
+    judgeModel: claude-haiku-4-5-20251001
+    judgeProvider: anthropic
+    secretRef: anthropic-credentials
+    minScore: "0.7"
+  # Memory backend: Mem0-compatible service for snapshot/restore
+  memory:
+    # Quality snapshot tracking (Sprint 12a)
+    snapshotEnabled: true
+    snapshotIntervalMinutes: 30
+    maxSnapshots: 10
+    driftThreshold: "0.10"
+    rollbackOnDrift: true
+    # Real memory backend integration (Sprint 12b)
+    backend:
+      endpoint: "http://mem0.memory.svc:8080"
+      secretRef: mem0-credentials       # Secret must have key: MEM0_API_KEY
+      sessionId: "k8s-health-agent-prod"
+    snapshotOnPromotion: true           # Export memory before each canary
+    rollbackMemoryOnCanaryFail: true    # Restore memory if canary fails
+  observability:
+    langfuse:
+      endpoint: "https://cloud.langfuse.com"
+      secretRef: langfuse-credentials
+# After applying, the controller will:
+#   1. Inject MEM0_API_URL and AGENT_SESSION_ID into all agent pods.
+#   2. Create agent-memory-check AnalysisTemplate in the same namespace.
+#   3. Export memory snapshot before each new canary rollout starts.
+#   4. Restore the snapshot if the canary fails.
+#
+# Check snapshot status:
+#   kubectl get agentdeployment my-agent \
+#     -o jsonpath='{.status.memory}' | jq .
+#
+# Check snapshot Secret:
+#   kubectl get secret my-agent-memory-snapshot -o yaml
+#
+# Required Secrets:
+#   kubectl create secret generic mem0-credentials \
+#     --from-literal=MEM0_API_KEY=<your-mem0-api-key>
+#   kubectl create secret generic anthropic-credentials \
+#     --from-literal=API_KEY=<your-anthropic-key>
+#   kubectl create secret generic langfuse-credentials \
+#     --from-literal=LANGFUSE_PUBLIC_KEY=<pk> \
+#     --from-literal=LANGFUSE_SECRET_KEY=<sk>

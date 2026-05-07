@@ -186,6 +186,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			fmt.Sprintf("tool check template reconcile failed: %v", err))
 	}
 
+	// Step 3.3: Reconcile Memory Check AnalysisTemplate (if memory backend + evaluation configured).
+	// Non-fatal — memory checking is optional and must never block rollouts.
+	if err := r.reconcileMemoryCheckTemplate(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile memory check AnalysisTemplate")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "MemoryCheckError",
+			fmt.Sprintf("memory check template reconcile failed: %v", err))
+	}
+
 	// Step 3.5: Reconcile OTel ConfigMap (if enabled)
 	if err := r.reconcileOTelConfig(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile OTel ConfigMap")
@@ -277,7 +285,15 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			fmt.Sprintf("memory lifecycle reconcile failed: %v", err))
 	}
 
-	// Step 5.12: Reconcile optimization scorecard — recompute summary stats and
+	// Step 5.12: Reconcile memory backend — snapshot before canary, restore on fail.
+	// Non-fatal — memory backend failures must never block rollouts.
+	if err := r.reconcileMemoryBackend(ctx, agentDeploy, compositeVersion); err != nil {
+		log.Error(err, "failed to reconcile memory backend")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "MemoryBackendError",
+			fmt.Sprintf("memory backend reconcile failed: %v", err))
+	}
+
+	// Step 5.13: Reconcile optimization scorecard — recompute summary stats and
 	// detect post-promotion regressions. Non-fatal — scorecard failures must never
 	// block rollouts.
 	if err := r.reconcileOptimizationScorecard(ctx, agentDeploy); err != nil {
@@ -1336,6 +1352,22 @@ func buildPodSpec(agentDeploy *agentrollv1alpha1.AgentDeployment) corev1.PodSpec
 				},
 			},
 		})
+	}
+
+	// Inject Mem0 env vars when a memory backend is configured.
+	// MEM0_API_URL and AGENT_SESSION_ID are consumed by the agent's memory SDK.
+	if agentDeploy.Spec.Memory != nil && agentDeploy.Spec.Memory.Backend != nil {
+		backend := agentDeploy.Spec.Memory.Backend
+		containers[0].Env = append(containers[0].Env, corev1.EnvVar{
+			Name:  "MEM0_API_URL",
+			Value: backend.Endpoint,
+		})
+		if backend.SessionID != "" {
+			containers[0].Env = append(containers[0].Env, corev1.EnvVar{
+				Name:  "AGENT_SESSION_ID",
+				Value: backend.SessionID,
+			})
+		}
 	}
 
 	return corev1.PodSpec{
