@@ -44,10 +44,13 @@ spec:
 #   kubectl get agentdeployment my-agent \
 #     -o jsonpath='{.status.evolution.scorecard}' | jq .
 #
-# Scorecard fields:
+# Scorecard fields (status.evolution.scorecard.*):
 #   promptPromotions / promptRejections — lifetime A/B test outcomes
 #   toolPromotions / toolRejections     — lifetime tool experiment outcomes
-#   optimizationGeneration              — total successful optimization cycles
 #   qualityTrend                        — "improving" | "degrading" | "stable"
 #   meanQualityLast7Days                — trailing 7-day quality window
 #   regressionDetected                  — true if post-promotion quality dropped >10%
+#
+# Generation counter (status.evolution.optimizationGeneration):
+#   kubectl get agentdeployment my-agent \
+#     -o jsonpath='{.status.evolution.optimizationGeneration}'
