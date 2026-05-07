@@ -1,0 +1,163 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: toolexperiments.agentroll.dev
+spec:
+  group: agentroll.dev
+  names:
+    kind: ToolExperiment
+    listKind: ToolExperimentList
+    plural: toolexperiments
+    singular: toolexperiment
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.agentDeploymentRef
+      name: Agent
+      type: string
+    - jsonPath: .status.pValue
+      name: P-Value
+      type: number
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ToolExperiment is the Schema for the toolexperiments API.
+          It describes a candidate MCP tool configuration for A/B testing against the current
+          stable tool set. The AgentDeploymentReconciler drives the experiment lifecycle when
+          the parent AgentDeployment's spec.evolution.toolExperiment references this resource.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ToolExperimentSpec defines the desired state of a tool A/B
+              experiment.
+            properties:
+              additionalTools:
+                description: |-
+                  AdditionalTools lists MCP tool services to inject into canary pods during
+                  the experiment. These are added on top of the agent's declared toolDependencies.
+                items:
+                  description: ToolDependency declares a dependency on an external
+                    tool service.
+                  properties:
+                    endpoint:
+                      description: Endpoint is the service endpoint if not using Kubernetes
+                        service discovery.
+                      type: string
+                    name:
+                      description: Name is the identifier of the tool service (e.g.,
+                        "crm-mcp-server").
+                      type: string
+                    version:
+                      description: Version is a semver constraint (e.g., ">=1.2.0",
+                        "~1.3").
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              agentDeploymentRef:
+                description: |-
+                  AgentDeploymentRef is the name of the AgentDeployment (in the same namespace)
+                  that this experiment is being tested against.
+                type: string
+              hypothesis:
+                description: |-
+                  Hypothesis describes why this tool configuration is expected to improve quality.
+                  Recorded in the tool lineage for future reference.
+                type: string
+              parentToolsHash:
+                description: |-
+                  ParentToolsHash is the toolsHash of the stable configuration this experiment
+                  was derived from. Recorded in the AgentDeployment's tool lineage for traceability.
+                type: string
+              removedTools:
+                description: |-
+                  RemovedTools lists the names of tools from spec.agentMeta.toolDependencies
+                  to exclude from canary pods during the experiment.
+                items:
+                  type: string
+                type: array
+            required:
+            - agentDeploymentRef
+            type: object
+          status:
+            description: ToolExperimentStatus reflects the observed state of the tool
+              experiment.
+            properties:
+              controlMeanScore:
+                description: ControlMeanScore is the mean of the control (stable)
+                  scores used for comparison.
+                type: number
+              experimentStartedAt:
+                description: |-
+                  ExperimentStartedAt is when the experiment transitioned from Pending to Testing.
+                  Used to partition eval history scores into control (before) and variant (after).
+                format: date-time
+                type: string
+              message:
+                description: Message is a human-readable summary of the experiment
+                  outcome.
+                type: string
+              pValue:
+                description: |-
+                  PValue is the Welch's t-test p-value comparing variant vs control scores.
+                  Values < 0.05 indicate statistically significant difference.
+                type: number
+              phase:
+                description: Phase is the current experiment lifecycle stage.
+                enum:
+                - Pending
+                - Testing
+                - Promoted
+                - Rejected
+                type: string
+              promotedAt:
+                description: PromotedAt is when the experiment was promoted to stable.
+                format: date-time
+                type: string
+              rejectedAt:
+                description: RejectedAt is when the experiment was rejected.
+                format: date-time
+                type: string
+              variantMeanScore:
+                description: VariantMeanScore is the mean of VariantScores. Populated
+                  after the t-test runs.
+                type: number
+              variantScores:
+                description: VariantScores is the list of LLM-as-judge quality scores
+                  collected while Testing.
+                items:
+                  type: number
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
