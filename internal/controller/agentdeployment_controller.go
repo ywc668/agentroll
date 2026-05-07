@@ -69,6 +69,7 @@ var managedAnalysisTemplates = map[string]bool{
 	"agent-quality-check": true,
 	"agent-cost-check":    true,
 	"agent-judge-check":   true,
+	"agent-tool-check":    true,
 }
 
 // Repeated string constants — extracted to satisfy goconst.
@@ -93,6 +94,8 @@ type AgentDeploymentReconciler struct {
 // +kubebuilder:rbac:groups=agentroll.dev,resources=agentdeployments/finalizers,verbs=update
 // +kubebuilder:rbac:groups=agentroll.dev,resources=promptvariants,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=agentroll.dev,resources=promptvariants/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=agentroll.dev,resources=toolexperiments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=agentroll.dev,resources=toolexperiments/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=argoproj.io,resources=rollouts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=argoproj.io,resources=analysistemplates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -174,6 +177,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			fmt.Sprintf("judge template reconcile failed: %v", err))
 	}
 
+	// Step 3.2: Reconcile Tool Check AnalysisTemplate (if tool dependencies or experiment configured).
+	// Non-fatal — tool checking is optional and must never block rollouts.
+	if err := r.reconcileToolCheckTemplate(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile tool check AnalysisTemplate")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ToolCheckError",
+			fmt.Sprintf("tool check template reconcile failed: %v", err))
+	}
+
 	// Step 3.5: Reconcile OTel ConfigMap (if enabled)
 	if err := r.reconcileOTelConfig(ctx, agentDeploy); err != nil {
 		log.Error(err, "failed to reconcile OTel ConfigMap")
@@ -247,6 +258,14 @@ func (r *AgentDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(err, "failed to reconcile prompt experiment")
 		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "PromptExperimentError",
 			fmt.Sprintf("prompt experiment failed: %v", err))
+	}
+
+	// Step 5.10: Reconcile tool experiment — advance A/B test state machine.
+	// Non-fatal — experiment failures must never block rollouts.
+	if err := r.reconcileToolExperiment(ctx, agentDeploy); err != nil {
+		log.Error(err, "failed to reconcile tool experiment")
+		r.Recorder.Event(agentDeploy, corev1.EventTypeWarning, "ToolExperimentError",
+			fmt.Sprintf("tool experiment failed: %v", err))
 	}
 
 	// Step 6: Update Status — capture previous phase so we can emit a phase-change event.
@@ -1404,13 +1423,29 @@ func (r *AgentDeploymentReconciler) reconcileToolDependencies(
 	ctx context.Context,
 	agentDeploy *agentrollv1alpha1.AgentDeployment,
 ) error {
-	if len(agentDeploy.Spec.AgentMeta.ToolDependencies) == 0 {
+	hasTools := len(agentDeploy.Spec.AgentMeta.ToolDependencies) > 0
+	hasExperiment := agentDeploy.Spec.Evolution != nil && agentDeploy.Spec.Evolution.ToolExperiment != ""
+	if !hasTools && !hasExperiment {
 		return nil
 	}
 
 	log := logf.FromContext(ctx)
 
+	// Determine which tools to remove/add from an active (Testing) experiment.
+	activeExp := r.activeToolExperiment(ctx, agentDeploy)
+	removedToolNames := map[string]bool{}
+	var additionalTools []agentrollv1alpha1.ToolDependency
+	if activeExp != nil {
+		for _, name := range activeExp.Spec.RemovedTools {
+			removedToolNames[name] = true
+		}
+		additionalTools = activeExp.Spec.AdditionalTools
+	}
+
 	for _, tool := range agentDeploy.Spec.AgentMeta.ToolDependencies {
+		if removedToolNames[tool.Name] {
+			continue
+		}
 		endpoint := tool.Endpoint
 
 		if endpoint == "" {
@@ -1478,6 +1513,47 @@ func (r *AgentDeploymentReconciler) reconcileToolDependencies(
 			"endpoint", endpoint,
 			"versionConstraint", tool.Version,
 		)
+	}
+
+	// Inject additional tools from the active experiment (no version constraint check).
+	for _, tool := range additionalTools {
+		endpoint := tool.Endpoint
+		if endpoint == "" {
+			svc := &corev1.Service{}
+			if err := r.Get(ctx, client.ObjectKey{
+				Name:      tool.Name,
+				Namespace: agentDeploy.Namespace,
+			}, svc); err != nil {
+				if errors.IsNotFound(err) {
+					log.Info("Additional experiment tool service not found, skipping",
+						"tool", tool.Name)
+					continue
+				}
+				return fmt.Errorf("failed to lookup service for additional tool %q: %w", tool.Name, err)
+			}
+			port := int32(8080)
+			if len(svc.Spec.Ports) > 0 {
+				port = svc.Spec.Ports[0].Port
+			}
+			endpoint = fmt.Sprintf("http://%s.%s.svc:%d", tool.Name, agentDeploy.Namespace, port)
+		}
+
+		envVarName := "MCP_TOOL_" + strings.ToUpper(strings.ReplaceAll(tool.Name, "-", "_")) + "_ENDPOINT"
+		envVar := corev1.EnvVar{Name: envVarName, Value: endpoint}
+
+		found := false
+		for _, e := range agentDeploy.Spec.Container.Env {
+			if e.Name == envVarName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			agentDeploy.Spec.Container.Env = append(agentDeploy.Spec.Container.Env, envVar)
+		}
+
+		log.Info("Additional experiment MCP tool resolved",
+			"tool", tool.Name, "endpoint", endpoint)
 	}
 
 	return nil

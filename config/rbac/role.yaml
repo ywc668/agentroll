@@ -48,6 +48,7 @@ rules:
   resources:
   - agentdeployments/status
   - promptvariants/status
+  - toolexperiments/status
   verbs:
   - get
   - patch
@@ -56,6 +57,7 @@ rules:
   - agentroll.dev
   resources:
   - promptvariants
+  - toolexperiments
   verbs:
   - get
   - list

@@ -1,0 +1,47 @@
+# Tool Experiment example — A/B tests adding kubectl-exec to kb-agent's tool set.
+# Apply with: kubectl apply -f tool-experiment-example.yaml
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: ToolExperiment
+metadata:
+  name: kb-agent-add-kubectl-exec
+  namespace: default
+spec:
+  agentDeploymentRef: kb-agent
+  additionalTools:
+    - name: kubectl-exec-tool
+      version: ">=v1.0.0"
+  hypothesis: "kubectl-exec enables complex debugging tasks that improve overall quality score"
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: kb-agent
+  namespace: default
+spec:
+  container:
+    image: ghcr.io/agentroll/k8s-health-agent:v1.2.0
+  agentMeta:
+    promptVersion: "v3"
+    modelVersion: "claude-sonnet-4-5"
+    toolDependencies:
+      - name: kubectl-get
+        version: ">=v1.0.0"
+      - name: kubectl-describe
+        version: ">=v1.0.0"
+  rollout:
+    strategy: canary
+    canarySteps:
+      - setWeight: 20
+      - pause:
+          duration: 5m
+      - setWeight: 50
+      - pause:
+          duration: 10m
+  evolution:
+    enabled: true
+    toolExperiment: kb-agent-add-kubectl-exec
+    toolExperimentMinSamples: 5
+  observability:
+    langfuse:
+      secretRef: langfuse-credentials
