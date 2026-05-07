@@ -95,6 +95,8 @@ func (r *AgentDeploymentReconciler) reconcileMemoryLifecycle(
 		var parsed float64
 		if _, err := fmt.Sscanf(*mem.DriftThreshold, "%f", &parsed); err == nil {
 			threshold = parsed
+		} else {
+			log.Info("DriftThreshold parse failed, using default 0.10", "value", *mem.DriftThreshold)
 		}
 	}
 
@@ -121,8 +123,9 @@ func (r *AgentDeploymentReconciler) reconcileMemoryLifecycle(
 // ─── 12.2 Drift score computation ────────────────────────────────────────────
 
 // computeDriftScore computes (recentMean - baselineMean) / baselineMean from
-// snapshots split into equal halves. Requires at least 4 snapshots; returns 0
-// when there are fewer.
+// snapshots. Uses floor(n/2) for both halves: oldest floor(n/2) = baseline,
+// newest floor(n/2) = recent. For odd n the middle element is excluded.
+// Requires at least 4 snapshots; returns 0 when there are fewer.
 //
 // Negative values indicate quality degradation; positive values indicate improvement.
 func computeDriftScore(snapshots []agentrollv1alpha1.MemorySnapshotEntry) float64 {

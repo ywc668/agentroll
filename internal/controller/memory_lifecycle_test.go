@@ -156,3 +156,32 @@ func TestRecentMeanQuality_Empty(t *testing.T) {
 		t.Error("expected 0.0 for empty history")
 	}
 }
+
+func TestRecentMeanQuality_SubsetOfHistory(t *testing.T) {
+	// n=2 from a 4-entry history → only last 2 entries averaged
+	history := []agentrollv1alpha1.EvalHistoryEntry{
+		{QualityScore: 0.5},
+		{QualityScore: 0.6},
+		{QualityScore: 0.8},
+		{QualityScore: 0.9},
+	}
+	mean := recentMeanQuality(history, 2)
+	expected := (0.8 + 0.9) / 2.0
+	if mean < expected-0.001 || mean > expected+0.001 {
+		t.Errorf("expected mean of last 2 entries %.4f, got %.4f", expected, mean)
+	}
+}
+
+func TestComputeDriftScore_ZeroBaseline(t *testing.T) {
+	// All baseline entries have score 0 → return 0 (avoid divide-by-zero)
+	snapshots := []agentrollv1alpha1.MemorySnapshotEntry{
+		{MeanQualityScore: 0.0},
+		{MeanQualityScore: 0.0},
+		{MeanQualityScore: 0.5},
+		{MeanQualityScore: 0.6},
+	}
+	score := computeDriftScore(snapshots)
+	if score != 0.0 {
+		t.Errorf("expected 0.0 drift when baseline mean is zero, got %.4f", score)
+	}
+}
