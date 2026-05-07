@@ -613,6 +613,31 @@ spec:
                   Memory configures the agent memory lifecycle: periodic quality snapshots,
                   trend-based drift detection, and optional auto-rollback on degradation.
                 properties:
+                  backend:
+                    description: |-
+                      Backend configures the Mem0-compatible memory backend for snapshot/restore.
+                      When set, the controller injects MEM0_API_URL and AGENT_SESSION_ID env vars
+                      into all agent pods automatically.
+                    properties:
+                      endpoint:
+                        description: |-
+                          Endpoint is the base URL of the Mem0-compatible API server
+                          (e.g., "http://mem0.memory:8080").
+                        type: string
+                      secretRef:
+                        description: |-
+                          SecretRef is the name of a Kubernetes Secret in the same namespace
+                          containing the Mem0 API key. Expected key: MEM0_API_KEY.
+                        type: string
+                      sessionId:
+                        description: |-
+                          SessionID is the memory session identifier for this agent.
+                          All memory operations (export/import) are scoped to this session.
+                        type: string
+                    required:
+                    - endpoint
+                    - secretRef
+                    type: object
                   driftThreshold:
                     default: "0.10"
                     description: |-
@@ -628,6 +653,13 @@ spec:
                     format: int32
                     minimum: 2
                     type: integer
+                  rollbackMemoryOnCanaryFail:
+                    default: false
+                    description: |-
+                      RollbackMemoryOnCanaryFail controls whether the controller restores the
+                      pre-canary memory snapshot (via Backend.Endpoint/api/memory/import) when
+                      a canary rollout fails. Requires Backend and SnapshotOnPromotion.
+                    type: boolean
                   rollbackOnDrift:
                     default: false
                     description: |-
@@ -649,6 +681,13 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                  snapshotOnPromotion:
+                    default: false
+                    description: |-
+                      SnapshotOnPromotion controls whether the controller exports the agent's memory
+                      state (via Backend.Endpoint/api/memory/export) before each new canary rollout
+                      starts. The snapshot is stored as a Kubernetes Secret. Requires Backend.
+                    type: boolean
                 required:
                 - snapshotEnabled
                 type: object
@@ -1122,6 +1161,21 @@ spec:
                       DriftScore is the fractional quality change since baseline:
                       (recentMean - baselineMean) / baselineMean. Negative = degradation.
                     type: number
+                  lastMemorySnapshotAt:
+                    description: LastMemorySnapshotAt is when the most recent Mem0
+                      export snapshot was taken.
+                    format: date-time
+                    type: string
+                  lastMemorySnapshotSecret:
+                    description: |-
+                      LastMemorySnapshotSecret is the name of the Kubernetes Secret holding the
+                      most recent Mem0 export snapshot data (key: snapshot.json).
+                    type: string
+                  lastMemorySnapshotVersion:
+                    description: |-
+                      LastMemorySnapshotVersion is the composite version that was active when the
+                      most recent Mem0 export snapshot was taken.
+                    type: string
                   lastSnapshotAt:
                     description: LastSnapshotAt is when the most recent memory snapshot
                       was taken.

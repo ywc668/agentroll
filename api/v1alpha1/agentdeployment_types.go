@@ -111,6 +111,42 @@ type MemorySpec struct {
 	// +kubebuilder:default=false
 	// +optional
 	RollbackOnDrift bool `json:"rollbackOnDrift,omitempty"`
+
+	// Backend configures the Mem0-compatible memory backend for snapshot/restore.
+	// When set, the controller injects MEM0_API_URL and AGENT_SESSION_ID env vars
+	// into all agent pods automatically.
+	// +optional
+	Backend *MemoryBackendSpec `json:"backend,omitempty"`
+
+	// SnapshotOnPromotion controls whether the controller exports the agent's memory
+	// state (via Backend.Endpoint/api/memory/export) before each new canary rollout
+	// starts. The snapshot is stored as a Kubernetes Secret. Requires Backend.
+	// +kubebuilder:default=false
+	// +optional
+	SnapshotOnPromotion bool `json:"snapshotOnPromotion,omitempty"`
+
+	// RollbackMemoryOnCanaryFail controls whether the controller restores the
+	// pre-canary memory snapshot (via Backend.Endpoint/api/memory/import) when
+	// a canary rollout fails. Requires Backend and SnapshotOnPromotion.
+	// +kubebuilder:default=false
+	// +optional
+	RollbackMemoryOnCanaryFail bool `json:"rollbackMemoryOnCanaryFail,omitempty"`
+}
+
+// MemoryBackendSpec configures the connection to a Mem0-compatible memory backend.
+type MemoryBackendSpec struct {
+	// Endpoint is the base URL of the Mem0-compatible API server
+	// (e.g., "http://mem0.memory:8080").
+	Endpoint string `json:"endpoint"`
+
+	// SecretRef is the name of a Kubernetes Secret in the same namespace
+	// containing the Mem0 API key. Expected key: MEM0_API_KEY.
+	SecretRef string `json:"secretRef"`
+
+	// SessionID is the memory session identifier for this agent.
+	// All memory operations (export/import) are scoped to this session.
+	// +optional
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // AgentContainerSpec defines the container configuration for the agent.
@@ -846,6 +882,20 @@ type MemoryStatus struct {
 	// Snapshots records the last MaxSnapshots memory quality snapshots.
 	// +optional
 	Snapshots []MemorySnapshotEntry `json:"snapshots,omitempty"`
+
+	// LastMemorySnapshotAt is when the most recent Mem0 export snapshot was taken.
+	// +optional
+	LastMemorySnapshotAt *metav1.Time `json:"lastMemorySnapshotAt,omitempty"`
+
+	// LastMemorySnapshotSecret is the name of the Kubernetes Secret holding the
+	// most recent Mem0 export snapshot data (key: snapshot.json).
+	// +optional
+	LastMemorySnapshotSecret string `json:"lastMemorySnapshotSecret,omitempty"`
+
+	// LastMemorySnapshotVersion is the composite version that was active when the
+	// most recent Mem0 export snapshot was taken.
+	// +optional
+	LastMemorySnapshotVersion string `json:"lastMemorySnapshotVersion,omitempty"`
 }
 
 func init() {
