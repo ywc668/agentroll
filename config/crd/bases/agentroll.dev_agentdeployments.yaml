@@ -614,9 +614,11 @@ spec:
                   trend-based drift detection, and optional auto-rollback on degradation.
                 properties:
                   driftThreshold:
+                    default: "0.10"
                     description: |-
                       DriftThreshold is the fractional quality drop (0.0–1.0) that triggers a
-                      drift detection event. For example, 0.1 means a 10% drop from baseline.
+                      drift detection event. For example, "0.1" means a 10% drop from baseline.
+                    pattern: ^(0(\.\d+)?|1(\.0+)?)$
                     type: string
                   maxSnapshots:
                     default: 10

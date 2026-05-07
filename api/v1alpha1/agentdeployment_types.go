@@ -100,7 +100,9 @@ type MemorySpec struct {
 	MaxSnapshots *int32 `json:"maxSnapshots,omitempty"`
 
 	// DriftThreshold is the fractional quality drop (0.0–1.0) that triggers a
-	// drift detection event. For example, 0.1 means a 10% drop from baseline.
+	// drift detection event. For example, "0.1" means a 10% drop from baseline.
+	// +kubebuilder:validation:Pattern=`^(0(\.\d+)?|1(\.0+)?)$`
+	// +kubebuilder:default="0.10"
 	// +optional
 	DriftThreshold *string `json:"driftThreshold,omitempty"`
 
