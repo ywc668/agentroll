@@ -87,7 +87,9 @@ func (r *AgentDeploymentReconciler) reconcileMemoryBackend(
 		}
 	}
 
-	// Restore: progressing → degraded/rollingBack (canary failed).
+	// Restore: progressing → degraded (canary failed).
+	// PhaseRollingBack is included defensively for forward-compatibility; mapRolloutPhase
+	// does not currently produce it but may in a future Argo Rollouts version.
 	if agentDeploy.Spec.Memory.RollbackMemoryOnCanaryFail &&
 		prevPhase == agentrollv1alpha1.PhaseProgressing &&
 		(livePhase == agentrollv1alpha1.PhaseDegraded || livePhase == agentrollv1alpha1.PhaseRollingBack) {
