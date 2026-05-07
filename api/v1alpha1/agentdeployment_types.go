@@ -70,6 +70,46 @@ type AgentDeploymentSpec struct {
 	// that scores canary responses with an LLM and writes quality scores to Langfuse.
 	// +optional
 	Evaluation *EvaluationSpec `json:"evaluation,omitempty"`
+
+	// Memory configures the agent memory lifecycle: periodic quality snapshots,
+	// trend-based drift detection, and optional auto-rollback on degradation.
+	// +optional
+	Memory *MemorySpec `json:"memory,omitempty"`
+}
+
+// MemorySpec configures the agent memory lifecycle management.
+type MemorySpec struct {
+	// SnapshotEnabled controls whether periodic memory quality snapshots are taken.
+	// Each snapshot records the current composite version and mean quality score.
+	// +kubebuilder:default=false
+	SnapshotEnabled bool `json:"snapshotEnabled"`
+
+	// SnapshotIntervalMinutes is how often (in minutes) the controller takes a
+	// memory snapshot. Snapshots are only taken when new EvalHistory entries
+	// have been recorded since the last snapshot.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=30
+	// +optional
+	SnapshotIntervalMinutes *int32 `json:"snapshotIntervalMinutes,omitempty"`
+
+	// MaxSnapshots is the maximum number of snapshots to retain in status.memory.snapshots.
+	// Oldest entries are evicted when the buffer is full.
+	// +kubebuilder:validation:Minimum=2
+	// +kubebuilder:default=10
+	// +optional
+	MaxSnapshots *int32 `json:"maxSnapshots,omitempty"`
+
+	// DriftThreshold is the fractional quality drop (0.0–1.0) that triggers a
+	// drift detection event. For example, 0.1 means a 10% drop from baseline.
+	// +optional
+	DriftThreshold *string `json:"driftThreshold,omitempty"`
+
+	// RollbackOnDrift controls whether the controller emits a Warning event
+	// recommending manual rollback when drift is detected.
+	// (Full automated rollback is left to the user via rollback.thresholds.)
+	// +kubebuilder:default=false
+	// +optional
+	RollbackOnDrift bool `json:"rollbackOnDrift,omitempty"`
 }
 
 // AgentContainerSpec defines the container configuration for the agent.
@@ -336,6 +376,11 @@ type AgentDeploymentStatus struct {
 	// chronological order. Answers "did this tool configuration change help?"
 	// +optional
 	ToolLineage []ToolLineageEntry `json:"toolLineage,omitempty"`
+
+	// Memory reflects the current state of the agent memory lifecycle.
+	// Populated only when spec.memory.snapshotEnabled is true.
+	// +optional
+	Memory *MemoryStatus `json:"memory,omitempty"`
 }
 
 // AgentDeploymentPhase represents the lifecycle phase of an agent deployment.
@@ -715,6 +760,45 @@ type ToolLineageEntry struct {
 
 	// At is when the experiment concluded.
 	At metav1.Time `json:"at"`
+}
+
+// ─── Memory Lifecycle ────────────────────────────────────────────────────────
+
+// MemorySnapshotEntry records the quality state of an agent at a point in time.
+type MemorySnapshotEntry struct {
+	// At is when the snapshot was taken.
+	At metav1.Time `json:"at"`
+
+	// CompositeVersion is the agent's composite version at snapshot time.
+	CompositeVersion string `json:"compositeVersion"`
+
+	// MeanQualityScore is the mean LLM-as-judge score from recent EvalHistory entries.
+	// 0.0–1.0; higher is better.
+	MeanQualityScore float64 `json:"meanQualityScore"`
+
+	// SampleCount is the number of EvalHistory entries averaged into MeanQualityScore.
+	SampleCount int32 `json:"sampleCount"`
+}
+
+// MemoryStatus reflects the observed state of the agent memory lifecycle.
+type MemoryStatus struct {
+	// LastSnapshotAt is when the most recent memory snapshot was taken.
+	// +optional
+	LastSnapshotAt *metav1.Time `json:"lastSnapshotAt,omitempty"`
+
+	// DriftDetected is true when the recent mean quality score has dropped
+	// below (baseline mean * (1 - driftThreshold)).
+	// +optional
+	DriftDetected bool `json:"driftDetected,omitempty"`
+
+	// DriftScore is the fractional quality change since baseline:
+	// (recentMean - baselineMean) / baselineMean. Negative = degradation.
+	// +optional
+	DriftScore float64 `json:"driftScore,omitempty"`
+
+	// Snapshots records the last MaxSnapshots memory quality snapshots.
+	// +optional
+	Snapshots []MemorySnapshotEntry `json:"snapshots,omitempty"`
 }
 
 func init() {

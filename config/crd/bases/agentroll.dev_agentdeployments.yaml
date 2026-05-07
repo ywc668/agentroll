@@ -608,6 +608,49 @@ spec:
                 required:
                 - enabled
                 type: object
+              memory:
+                description: |-
+                  Memory configures the agent memory lifecycle: periodic quality snapshots,
+                  trend-based drift detection, and optional auto-rollback on degradation.
+                properties:
+                  driftThreshold:
+                    description: |-
+                      DriftThreshold is the fractional quality drop (0.0–1.0) that triggers a
+                      drift detection event. For example, 0.1 means a 10% drop from baseline.
+                    type: string
+                  maxSnapshots:
+                    default: 10
+                    description: |-
+                      MaxSnapshots is the maximum number of snapshots to retain in status.memory.snapshots.
+                      Oldest entries are evicted when the buffer is full.
+                    format: int32
+                    minimum: 2
+                    type: integer
+                  rollbackOnDrift:
+                    default: false
+                    description: |-
+                      RollbackOnDrift controls whether the controller emits a Warning event
+                      recommending manual rollback when drift is detected.
+                      (Full automated rollback is left to the user via rollback.thresholds.)
+                    type: boolean
+                  snapshotEnabled:
+                    default: false
+                    description: |-
+                      SnapshotEnabled controls whether periodic memory quality snapshots are taken.
+                      Each snapshot records the current composite version and mean quality score.
+                    type: boolean
+                  snapshotIntervalMinutes:
+                    default: 30
+                    description: |-
+                      SnapshotIntervalMinutes is how often (in minutes) the controller takes a
+                      memory snapshot. Snapshots are only taken when new EvalHistory entries
+                      have been recorded since the last snapshot.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - snapshotEnabled
+                type: object
               observability:
                 description: Observability configures agent-specific monitoring and
                   tracing.
@@ -1003,6 +1046,59 @@ spec:
                     type: string
                 required:
                 - status
+                type: object
+              memory:
+                description: |-
+                  Memory reflects the current state of the agent memory lifecycle.
+                  Populated only when spec.memory.snapshotEnabled is true.
+                properties:
+                  driftDetected:
+                    description: |-
+                      DriftDetected is true when the recent mean quality score has dropped
+                      below (baseline mean * (1 - driftThreshold)).
+                    type: boolean
+                  driftScore:
+                    description: |-
+                      DriftScore is the fractional quality change since baseline:
+                      (recentMean - baselineMean) / baselineMean. Negative = degradation.
+                    type: number
+                  lastSnapshotAt:
+                    description: LastSnapshotAt is when the most recent memory snapshot
+                      was taken.
+                    format: date-time
+                    type: string
+                  snapshots:
+                    description: Snapshots records the last MaxSnapshots memory quality
+                      snapshots.
+                    items:
+                      description: MemorySnapshotEntry records the quality state of
+                        an agent at a point in time.
+                      properties:
+                        at:
+                          description: At is when the snapshot was taken.
+                          format: date-time
+                          type: string
+                        compositeVersion:
+                          description: CompositeVersion is the agent's composite version
+                            at snapshot time.
+                          type: string
+                        meanQualityScore:
+                          description: |-
+                            MeanQualityScore is the mean LLM-as-judge score from recent EvalHistory entries.
+                            0.0–1.0; higher is better.
+                          type: number
+                        sampleCount:
+                          description: SampleCount is the number of EvalHistory entries
+                            averaged into MeanQualityScore.
+                          format: int32
+                          type: integer
+                      required:
+                      - at
+                      - compositeVersion
+                      - meanQualityScore
+                      - sampleCount
+                      type: object
+                    type: array
                 type: object
               observedGeneration:
                 description: ObservedGeneration is the most recent generation observed
