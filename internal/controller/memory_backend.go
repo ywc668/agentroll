@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -33,6 +34,10 @@ import (
 
 	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
 )
+
+// mem0HTTPClient is the HTTP client used for all Mem0 API calls.
+// It has a 30-second timeout to prevent reconcile loops from blocking indefinitely.
+var mem0HTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // memorySnapshotSecretName returns the name of the K8s Secret used to store
 // the pre-canary memory snapshot for agentName.
@@ -261,7 +266,7 @@ func mem0ExportMemory(ctx context.Context, endpoint, sessionID, apiKey string) (
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mem0HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("mem0ExportMemory: request failed: %w", err)
 	}
@@ -296,7 +301,7 @@ func mem0ImportMemory(ctx context.Context, endpoint, sessionID, apiKey string, d
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mem0HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("mem0ImportMemory: request failed: %w", err)
 	}

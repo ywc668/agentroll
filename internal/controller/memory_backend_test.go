@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -197,5 +198,12 @@ func TestRestoreMemorySnapshot_NoSnapshot(t *testing.T) {
 	err := r.restoreMemorySnapshot(context.Background(), ad)
 	if err != nil {
 		t.Fatalf("expected no error for missing snapshot, got: %v", err)
+	}
+}
+
+func TestMem0HTTPClient_HasTimeout(t *testing.T) {
+	const want = 30 * time.Second
+	if mem0HTTPClient.Timeout != want {
+		t.Errorf("mem0HTTPClient.Timeout = %v, want %v", mem0HTTPClient.Timeout, want)
 	}
 }
