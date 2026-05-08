@@ -1,0 +1,65 @@
+# DSPy-style optimization example — uses eval history as training signal.
+# Apply with: kubectl apply -f dspy-optimizer-example.yaml
+---
+apiVersion: agentroll.dev/v1alpha1
+kind: AgentDeployment
+metadata:
+  name: my-agent-dspy
+  namespace: default
+spec:
+  container:
+    image: ghcr.io/agentroll/k8s-health-agent:v1.2.0
+  agentMeta:
+    promptVersion: "v3"
+    modelVersion: "claude-sonnet-4-5"
+  rollout:
+    strategy: canary
+    steps:
+      - setWeight: 20
+      - pause:
+          duration: 5m
+      - setWeight: 50
+      - pause:
+          duration: 10m
+  # LLM-as-judge evaluation populates status.evalHistory used as training signal
+  evaluation:
+    judgeModel: claude-haiku-4-5-20251001
+    judgeProvider: anthropic
+    secretRef: anthropic-credentials
+    minScore: "0.7"
+  # Evolution with mode=dspy: uses eval history to optimize the prompt
+  evolution:
+    enabled: true
+    strategy: prompt-optimizer
+    trigger: on-canary-fail
+    # PromptConfigMap is read to include the current prompt in training context.
+    # The DSPy optimizer will ALSO write back the new prompt here after promotion.
+    promptConfigMap: my-agent-prompts
+    optimizer:
+      model: claude-haiku-4-5-20251001
+      provider: anthropic
+      secretRef: anthropic-credentials
+      # mode: dspy uses eval history as MIPRO-style training examples.
+      # The controller creates a PromptVariant and wires spec.evolution.promptExperiment
+      # automatically. The A/B test machinery then handles the experiment.
+      mode: dspy
+  observability:
+    langfuse:
+      endpoint: "https://cloud.langfuse.com"
+      secretRef: langfuse-credentials
+# After a canary failure with enough eval history (>=5 samples):
+#   1. Controller creates a PromptVariant named my-agent-dspy-<timestamp>
+#   2. Controller sets spec.evolution.promptExperiment to that variant
+#   3. reconcilePromptExperiment starts the A/B test automatically
+#   4. View in status:
+#      kubectl get agentdeployment my-agent-dspy \
+#        -o jsonpath='{.status.evolution.dspyJobName}'
+#
+# Required secrets:
+#   kubectl create secret generic anthropic-credentials \
+#     --from-literal=API_KEY=<your-anthropic-key>
+#   kubectl create secret generic langfuse-credentials \
+#     --from-literal=LANGFUSE_PUBLIC_KEY=<pk> \
+#     --from-literal=LANGFUSE_SECRET_KEY=<sk>
+#   kubectl create configmap my-agent-prompts \
+#     --from-literal=system_prompt="You are a helpful Kubernetes health assistant..."
