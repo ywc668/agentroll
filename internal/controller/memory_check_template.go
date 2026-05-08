@@ -64,7 +64,7 @@ func (r *AgentDeploymentReconciler) reconcileMemoryCheckTemplate(
 			"agentroll.dev/template-type":  "memory-check",
 		}
 		template.Spec = memoryCheckTemplateSpec(agentDeploy, lf)
-		return nil
+		return controllerutil.SetControllerReference(agentDeploy, template, r.Scheme)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile agent-memory-check AnalysisTemplate: %w", err)

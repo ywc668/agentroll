@@ -12,9 +12,11 @@ import (
 	"testing"
 	"time"
 
+	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	agentrollv1alpha1 "github.com/ywc668/agentroll/api/v1alpha1"
@@ -205,5 +207,127 @@ func TestMem0HTTPClient_HasTimeout(t *testing.T) {
 	const want = 30 * time.Second
 	if mem0HTTPClient.Timeout != want {
 		t.Errorf("mem0HTTPClient.Timeout = %v, want %v", mem0HTTPClient.Timeout, want)
+	}
+}
+
+// makeRolloutsScheme returns a scheme that includes corev1, agentrollv1alpha1, and
+// rolloutsv1alpha1 — required for tests that use the fake client with AnalysisTemplates.
+func makeRolloutsScheme() *runtime.Scheme {
+	s := runtime.NewScheme()
+	_ = corev1.AddToScheme(s)
+	_ = agentrollv1alpha1.AddToScheme(s)
+	_ = rolloutsv1alpha1.AddToScheme(s)
+	return s
+}
+
+func TestReconcileJudgeTemplate_SetsOwnerRef(t *testing.T) {
+	scheme := makeRolloutsScheme()
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "default",
+			UID:       "uid-judge",
+		},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			Evaluation: &agentrollv1alpha1.EvaluationSpec{
+				JudgeModel: "claude-haiku-4-5-20251001",
+				SecretRef:  "anthropic-creds",
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient, Scheme: scheme}
+
+	if err := r.reconcileJudgeTemplate(context.Background(), ad); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	template := &rolloutsv1alpha1.AnalysisTemplate{}
+	if err := fakeClient.Get(context.Background(),
+		client.ObjectKey{Name: "agent-judge-check", Namespace: "default"}, template); err != nil {
+		t.Fatalf("failed to get template: %v", err)
+	}
+	if len(template.OwnerReferences) == 0 {
+		t.Fatal("expected owner references, got none")
+	}
+	if template.OwnerReferences[0].Name != "test-agent" {
+		t.Errorf("owner name: got %q, want %q", template.OwnerReferences[0].Name, "test-agent")
+	}
+}
+
+func TestReconcileToolCheckTemplate_SetsOwnerRef(t *testing.T) {
+	scheme := makeRolloutsScheme()
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "default",
+			UID:       "uid-tool",
+		},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			AgentMeta: agentrollv1alpha1.AgentMetaSpec{
+				ToolDependencies: []agentrollv1alpha1.ToolDependency{
+					{Name: "kubectl", Version: "v1.27.0"},
+				},
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient, Scheme: scheme}
+
+	if err := r.reconcileToolCheckTemplate(context.Background(), ad); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	template := &rolloutsv1alpha1.AnalysisTemplate{}
+	if err := fakeClient.Get(context.Background(),
+		client.ObjectKey{Name: "agent-tool-check", Namespace: "default"}, template); err != nil {
+		t.Fatalf("failed to get template: %v", err)
+	}
+	if len(template.OwnerReferences) == 0 {
+		t.Fatal("expected owner references, got none")
+	}
+	if template.OwnerReferences[0].Name != "test-agent" {
+		t.Errorf("owner name: got %q, want %q", template.OwnerReferences[0].Name, "test-agent")
+	}
+}
+
+func TestReconcileMemoryCheckTemplate_SetsOwnerRef(t *testing.T) {
+	scheme := makeRolloutsScheme()
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-agent",
+			Namespace: "default",
+			UID:       "uid-memory",
+		},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			Memory: &agentrollv1alpha1.MemorySpec{
+				Backend: &agentrollv1alpha1.MemoryBackendSpec{
+					Endpoint:  "http://mem0.svc",
+					SecretRef: "mem0-creds",
+				},
+			},
+			Evaluation: &agentrollv1alpha1.EvaluationSpec{
+				JudgeModel: "claude-haiku-4-5-20251001",
+				SecretRef:  "anthropic-creds",
+			},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient, Scheme: scheme}
+
+	if err := r.reconcileMemoryCheckTemplate(context.Background(), ad); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	template := &rolloutsv1alpha1.AnalysisTemplate{}
+	if err := fakeClient.Get(context.Background(),
+		client.ObjectKey{Name: "agent-memory-check", Namespace: "default"}, template); err != nil {
+		t.Fatalf("failed to get template: %v", err)
+	}
+	if len(template.OwnerReferences) == 0 {
+		t.Fatal("expected owner references, got none")
+	}
+	if template.OwnerReferences[0].Name != "test-agent" {
+		t.Errorf("owner name: got %q, want %q", template.OwnerReferences[0].Name, "test-agent")
 	}
 }

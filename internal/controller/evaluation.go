@@ -73,7 +73,7 @@ func (r *AgentDeploymentReconciler) reconcileJudgeTemplate(
 			"agentroll.dev/template-type":  "judge",
 		}
 		template.Spec = judgeTemplateSpec(eval, lf)
-		return nil
+		return controllerutil.SetControllerReference(agentDeploy, template, r.Scheme)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile agent-judge-check AnalysisTemplate: %w", err)

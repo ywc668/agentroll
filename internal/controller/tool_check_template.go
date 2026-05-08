@@ -63,7 +63,7 @@ func (r *AgentDeploymentReconciler) reconcileToolCheckTemplate(
 			"agentroll.dev/template-type":  "tool-check",
 		}
 		template.Spec = toolCheckTemplateSpec(agentDeploy, lf)
-		return nil
+		return controllerutil.SetControllerReference(agentDeploy, template, r.Scheme)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to reconcile agent-tool-check AnalysisTemplate: %w", err)
