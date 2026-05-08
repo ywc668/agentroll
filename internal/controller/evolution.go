@@ -101,9 +101,16 @@ func (r *AgentDeploymentReconciler) reconcileEvolution(
 	// 7.3 Prompt Optimizer — requires LLM and fires on failure.
 	if runPrompt && (phase == agentrollv1alpha1.PhaseDegraded || phase == agentrollv1alpha1.PhaseRollingBack) {
 		if ev.Optimizer != nil {
-			proposal, err := r.runPromptOptimizer(ctx, agentDeploy)
-			if err != nil {
-				log.Error(err, "prompt optimizer failed, continuing")
+			var proposal string
+			var promptErr error
+			if ev.Optimizer.Mode == "dspy" {
+				proposal, promptErr = r.reconcileDspyOptimizer(ctx, agentDeploy)
+			} else {
+				proposal, promptErr = r.runPromptOptimizer(ctx, agentDeploy)
+			}
+			if promptErr != nil {
+				log.Error(promptErr, "prompt optimizer failed, continuing",
+					"mode", ev.Optimizer.Mode)
 			} else if proposal != "" {
 				proposals = append(proposals, proposal)
 			}
