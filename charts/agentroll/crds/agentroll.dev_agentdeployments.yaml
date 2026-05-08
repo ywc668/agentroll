@@ -499,6 +499,16 @@ spec:
                       model-upgrader strategies. Required when strategy is "prompt-optimizer",
                       "model-upgrader", or "all".
                     properties:
+                      mode:
+                        default: llm
+                        description: |-
+                          Mode selects the prompt optimization algorithm.
+                          "llm" (default) calls the LLM with failure context to suggest improvements.
+                          "dspy" uses eval history as MIPRO-style training examples for the optimizer.
+                        enum:
+                        - llm
+                        - dspy
+                        type: string
                       model:
                         description: Model is the LLM model identifier (e.g., "claude-sonnet-4-20250514",
                           "gpt-4o").
@@ -998,6 +1008,12 @@ spec:
                   Evolution reflects the current state of the self-evolution loop.
                   Populated only after the evolution controller has completed at least one evaluation.
                 properties:
+                  dspyJobName:
+                    description: |-
+                      DspyJobName records the name of the most recently created DSPy-optimized
+                      PromptVariant. Used to prevent re-triggering optimization while a variant
+                      is still in Pending or Testing phase.
+                    type: string
                   history:
                     description: |-
                       History records the last 20 evolution loop executions in chronological order.

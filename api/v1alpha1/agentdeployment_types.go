@@ -602,6 +602,14 @@ type EvolutionOptimizerSpec struct {
 	// SecretRef is the name of a Kubernetes Secret in the same namespace containing
 	// the provider API key. Expected key: API_KEY.
 	SecretRef string `json:"secretRef"`
+
+	// Mode selects the prompt optimization algorithm.
+	// "llm" (default) calls the LLM with failure context to suggest improvements.
+	// "dspy" uses eval history as MIPRO-style training examples for the optimizer.
+	// +kubebuilder:validation:Enum=llm;dspy
+	// +kubebuilder:default=llm
+	// +optional
+	Mode string `json:"mode,omitempty"`
 }
 
 // HumanApprovalSpec configures human-in-the-loop review for proposed improvements.
@@ -670,6 +678,12 @@ type EvolutionStatus struct {
 	// Recomputed on every reconcile from PromptLineage, ToolLineage, and EvalHistory.
 	// +optional
 	Scorecard *OptimizationScorecard `json:"scorecard,omitempty"`
+
+	// DspyJobName records the name of the most recently created DSPy-optimized
+	// PromptVariant. Used to prevent re-triggering optimization while a variant
+	// is still in Pending or Testing phase.
+	// +optional
+	DspyJobName string `json:"dspyJobName,omitempty"`
 }
 
 // OptimizationScorecard summarises the lifetime effectiveness of the
