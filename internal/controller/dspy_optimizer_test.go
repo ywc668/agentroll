@@ -129,6 +129,9 @@ func TestCreateDspyPromptVariant_CreatesVariant(t *testing.T) {
 	if pv.Spec.ParentVersion != "v3" {
 		t.Errorf("expected ParentVersion=v3, got %q", pv.Spec.ParentVersion)
 	}
+	if pv.Spec.Hypothesis == "" {
+		t.Error("expected non-empty Hypothesis")
+	}
 }
 
 func TestReconcileDspyOptimizer_SkipsWhenExperimentActive(t *testing.T) {
@@ -184,5 +187,52 @@ func TestReconcileDspyOptimizer_SkipsWhenInsufficientSamples(t *testing.T) {
 	}
 	if proposal != "" {
 		t.Errorf("expected empty proposal with insufficient samples, got %q", proposal)
+	}
+}
+
+func TestReconcileDspyOptimizer_SkipsWhenVariantPending(t *testing.T) {
+	scheme := makeRolloutsScheme()
+
+	// Create a PromptVariant that is still Pending — optimizer should not re-trigger.
+	pv := &agentrollv1alpha1.PromptVariant{
+		ObjectMeta: metav1.ObjectMeta{Name: "old-dspy-variant", Namespace: "default"},
+		Status: agentrollv1alpha1.PromptVariantStatus{
+			Phase: agentrollv1alpha1.PromptVariantPhasePending,
+		},
+	}
+
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "default"},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			Evolution: &agentrollv1alpha1.EvolutionSpec{
+				Enabled: true,
+				Optimizer: &agentrollv1alpha1.EvolutionOptimizerSpec{
+					Mode:      "dspy",
+					Model:     "claude-haiku-4-5-20251001",
+					SecretRef: "creds",
+				},
+			},
+		},
+		Status: agentrollv1alpha1.AgentDeploymentStatus{
+			Evolution: &agentrollv1alpha1.EvolutionStatus{DspyJobName: "old-dspy-variant"},
+			EvalHistory: []agentrollv1alpha1.EvalHistoryEntry{
+				{CompositeVersion: "v1", QualityScore: 0.8, Verdict: "pass"},
+				{CompositeVersion: "v2", QualityScore: 0.7, Verdict: "pass"},
+				{CompositeVersion: "v3", QualityScore: 0.6, Verdict: "fail"},
+				{CompositeVersion: "v4", QualityScore: 0.8, Verdict: "pass"},
+				{CompositeVersion: "v5", QualityScore: 0.9, Verdict: "pass"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pv).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient, Scheme: scheme}
+
+	proposal, err := r.reconcileDspyOptimizer(context.Background(), ad)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if proposal != "" {
+		t.Errorf("expected empty proposal when previous variant is still Pending, got %q", proposal)
 	}
 }

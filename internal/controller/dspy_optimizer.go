@@ -215,7 +215,7 @@ func dspyVariantName(agentName string, unixTimestamp int64) string {
 func (r *AgentDeploymentReconciler) createDspyPromptVariant(
 	ctx context.Context,
 	agentDeploy *agentrollv1alpha1.AgentDeployment,
-	optimizedPrompt, _ string,
+	optimizedPrompt, parentPrompt string,
 	sampleCount int,
 ) (string, error) {
 	name := dspyVariantName(agentDeploy.Name, time.Now().Unix())
