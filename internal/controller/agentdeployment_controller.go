@@ -36,13 +36,16 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	semver "github.com/Masterminds/semver/v3"
 	rolloutsv1alpha1 "github.com/argoproj/argo-rollouts/pkg/apis/rollouts/v1alpha1"
@@ -1808,6 +1811,20 @@ func isNoCRDError(err error) bool {
 		strings.Contains(msg, "resource type not known")
 }
 
+// promptVariantToAgentRequests maps a PromptVariant change to a reconcile Request
+// for its parent AgentDeployment. Used by the Watch in SetupWithManager.
+func promptVariantToAgentRequests(pv *agentrollv1alpha1.PromptVariant) []ctrlreconcile.Request {
+	if pv.Spec.AgentDeploymentRef == "" {
+		return nil
+	}
+	return []ctrlreconcile.Request{
+		{NamespacedName: types.NamespacedName{
+			Name:      pv.Spec.AgentDeploymentRef,
+			Namespace: pv.Namespace,
+		}},
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 // Reliability settings:
 //   - MaxConcurrentReconciles: 4 — allows parallel reconciles of different agents,
@@ -1819,6 +1836,16 @@ func (r *AgentDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&agentrollv1alpha1.AgentDeployment{}).
 		Owns(&rolloutsv1alpha1.Rollout{}).
 		Owns(&corev1.Service{}).
+		Watches(
+			&agentrollv1alpha1.PromptVariant{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []ctrlreconcile.Request {
+				pv, ok := obj.(*agentrollv1alpha1.PromptVariant)
+				if !ok {
+					return nil
+				}
+				return promptVariantToAgentRequests(pv)
+			}),
+		).
 		Named("agentdeployment").
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: 4,

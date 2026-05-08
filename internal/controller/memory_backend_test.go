@@ -361,3 +361,31 @@ func TestReconcileMemoryCheckTemplate_SetsOwnerRef(t *testing.T) {
 		t.Errorf("owner UID: got %q, want %q", ownerRef.UID, "uid-memory")
 	}
 }
+
+func TestPromptVariantWatchMapFunc_WithRef(t *testing.T) {
+	pv := &agentrollv1alpha1.PromptVariant{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-variant", Namespace: "default"},
+		Spec:       agentrollv1alpha1.PromptVariantSpec{AgentDeploymentRef: "my-agent"},
+	}
+	requests := promptVariantToAgentRequests(pv)
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requests))
+	}
+	if requests[0].Name != "my-agent" {
+		t.Errorf("expected request for my-agent, got %q", requests[0].Name)
+	}
+	if requests[0].Namespace != "default" {
+		t.Errorf("expected namespace default, got %q", requests[0].Namespace)
+	}
+}
+
+func TestPromptVariantWatchMapFunc_EmptyRef(t *testing.T) {
+	pv := &agentrollv1alpha1.PromptVariant{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-variant", Namespace: "default"},
+		Spec:       agentrollv1alpha1.PromptVariantSpec{AgentDeploymentRef: ""},
+	}
+	requests := promptVariantToAgentRequests(pv)
+	if len(requests) != 0 {
+		t.Errorf("expected 0 requests for empty ref, got %d", len(requests))
+	}
+}
