@@ -253,6 +253,16 @@ func TestReconcileJudgeTemplate_SetsOwnerRef(t *testing.T) {
 	if template.OwnerReferences[0].Name != "test-agent" {
 		t.Errorf("owner name: got %q, want %q", template.OwnerReferences[0].Name, "test-agent")
 	}
+	ownerRef := template.OwnerReferences[0]
+	if ownerRef.Controller == nil || !*ownerRef.Controller {
+		t.Error("expected Controller=true on owner reference")
+	}
+	if ownerRef.BlockOwnerDeletion == nil || !*ownerRef.BlockOwnerDeletion {
+		t.Error("expected BlockOwnerDeletion=true on owner reference")
+	}
+	if string(ownerRef.UID) != "uid-judge" {
+		t.Errorf("owner UID: got %q, want %q", ownerRef.UID, "uid-judge")
+	}
 }
 
 func TestReconcileToolCheckTemplate_SetsOwnerRef(t *testing.T) {
@@ -288,6 +298,16 @@ func TestReconcileToolCheckTemplate_SetsOwnerRef(t *testing.T) {
 	}
 	if template.OwnerReferences[0].Name != "test-agent" {
 		t.Errorf("owner name: got %q, want %q", template.OwnerReferences[0].Name, "test-agent")
+	}
+	ownerRef := template.OwnerReferences[0]
+	if ownerRef.Controller == nil || !*ownerRef.Controller {
+		t.Error("expected Controller=true on owner reference")
+	}
+	if ownerRef.BlockOwnerDeletion == nil || !*ownerRef.BlockOwnerDeletion {
+		t.Error("expected BlockOwnerDeletion=true on owner reference")
+	}
+	if string(ownerRef.UID) != "uid-tool" {
+		t.Errorf("owner UID: got %q, want %q", ownerRef.UID, "uid-tool")
 	}
 }
 
@@ -329,5 +349,15 @@ func TestReconcileMemoryCheckTemplate_SetsOwnerRef(t *testing.T) {
 	}
 	if template.OwnerReferences[0].Name != "test-agent" {
 		t.Errorf("owner name: got %q, want %q", template.OwnerReferences[0].Name, "test-agent")
+	}
+	ownerRef := template.OwnerReferences[0]
+	if ownerRef.Controller == nil || !*ownerRef.Controller {
+		t.Error("expected Controller=true on owner reference")
+	}
+	if ownerRef.BlockOwnerDeletion == nil || !*ownerRef.BlockOwnerDeletion {
+		t.Error("expected BlockOwnerDeletion=true on owner reference")
+	}
+	if string(ownerRef.UID) != "uid-memory" {
+		t.Errorf("owner UID: got %q, want %q", ownerRef.UID, "uid-memory")
 	}
 }

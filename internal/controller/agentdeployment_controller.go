@@ -748,7 +748,7 @@ func (r *AgentDeploymentReconciler) reconcileAnalysisTemplate(
 				"agentroll.dev/template-type":  "quality",
 			}
 			template.Spec = buildManagedTemplateSpec(name, tunedThresholds)
-			return nil
+			return controllerutil.SetControllerReference(agentDeploy, template, r.Scheme)
 		})
 
 		if createErr != nil {
