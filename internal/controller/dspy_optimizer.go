@@ -73,9 +73,10 @@ func (r *AgentDeploymentReconciler) reconcileDspyOptimizer(
 	}
 
 	// Read the current system prompt (if a ConfigMap is configured).
-	currentPrompt, err := r.readCurrentSystemPrompt(ctx, agentDeploy)
-	if err != nil {
-		log.Error(err, "failed to read current system prompt, proceeding without it")
+	// Failure is non-fatal — the optimizer proceeds without prior context.
+	currentPrompt, promptReadErr := r.readCurrentSystemPrompt(ctx, agentDeploy)
+	if promptReadErr != nil {
+		log.Error(promptReadErr, "failed to read current system prompt, proceeding without it")
 	}
 
 	// Read the LLM API key.

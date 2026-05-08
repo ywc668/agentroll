@@ -236,3 +236,98 @@ func TestReconcileDspyOptimizer_SkipsWhenVariantPending(t *testing.T) {
 		t.Errorf("expected empty proposal when previous variant is still Pending, got %q", proposal)
 	}
 }
+
+func TestReconcileDspyOptimizer_SkipsWhenVariantTesting(t *testing.T) {
+	scheme := makeRolloutsScheme()
+
+	pv := &agentrollv1alpha1.PromptVariant{
+		ObjectMeta: metav1.ObjectMeta{Name: "testing-variant", Namespace: "default"},
+		Status: agentrollv1alpha1.PromptVariantStatus{
+			Phase: agentrollv1alpha1.PromptVariantPhaseTesting,
+		},
+	}
+
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "default"},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			Evolution: &agentrollv1alpha1.EvolutionSpec{
+				Enabled: true,
+				Optimizer: &agentrollv1alpha1.EvolutionOptimizerSpec{
+					Mode:      "dspy",
+					Model:     "claude-haiku-4-5-20251001",
+					SecretRef: "creds",
+				},
+			},
+		},
+		Status: agentrollv1alpha1.AgentDeploymentStatus{
+			Evolution: &agentrollv1alpha1.EvolutionStatus{DspyJobName: "testing-variant"},
+			EvalHistory: []agentrollv1alpha1.EvalHistoryEntry{
+				{CompositeVersion: "v1", QualityScore: 0.8, Verdict: "pass"},
+				{CompositeVersion: "v2", QualityScore: 0.7, Verdict: "pass"},
+				{CompositeVersion: "v3", QualityScore: 0.6, Verdict: "fail"},
+				{CompositeVersion: "v4", QualityScore: 0.8, Verdict: "pass"},
+				{CompositeVersion: "v5", QualityScore: 0.9, Verdict: "pass"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pv).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient, Scheme: scheme}
+
+	proposal, err := r.reconcileDspyOptimizer(context.Background(), ad)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if proposal != "" {
+		t.Errorf("expected empty proposal when previous variant is still Testing, got %q", proposal)
+	}
+}
+
+func TestReconcileDspyOptimizer_ProceedsWhenVariantPromoted(t *testing.T) {
+	scheme := makeRolloutsScheme()
+
+	// A Promoted variant means the previous cycle is complete — optimizer should proceed.
+	pv := &agentrollv1alpha1.PromptVariant{
+		ObjectMeta: metav1.ObjectMeta{Name: "promoted-variant", Namespace: "default"},
+		Status: agentrollv1alpha1.PromptVariantStatus{
+			Phase: agentrollv1alpha1.PromptVariantPhasePromoted,
+		},
+	}
+
+	ad := &agentrollv1alpha1.AgentDeployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: "default"},
+		Spec: agentrollv1alpha1.AgentDeploymentSpec{
+			Evolution: &agentrollv1alpha1.EvolutionSpec{
+				Enabled: true,
+				Optimizer: &agentrollv1alpha1.EvolutionOptimizerSpec{
+					Mode:      "dspy",
+					Model:     "claude-haiku-4-5-20251001",
+					SecretRef: "creds",
+				},
+			},
+		},
+		Status: agentrollv1alpha1.AgentDeploymentStatus{
+			Evolution: &agentrollv1alpha1.EvolutionStatus{DspyJobName: "promoted-variant"},
+			EvalHistory: []agentrollv1alpha1.EvalHistoryEntry{
+				{CompositeVersion: "v1", QualityScore: 0.8, Verdict: "pass"},
+				{CompositeVersion: "v2", QualityScore: 0.7, Verdict: "pass"},
+				{CompositeVersion: "v3", QualityScore: 0.6, Verdict: "fail"},
+				{CompositeVersion: "v4", QualityScore: 0.8, Verdict: "pass"},
+				{CompositeVersion: "v5", QualityScore: 0.9, Verdict: "pass"},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pv).Build()
+	r := &AgentDeploymentReconciler{Client: fakeClient, Scheme: scheme}
+
+	// The optimizer proceeds past all guards and fails on missing API key secret —
+	// confirming the guards did not short-circuit prematurely.
+	_, err := r.reconcileDspyOptimizer(context.Background(), ad)
+	if err == nil {
+		t.Fatal("expected error (missing secret) when optimizer proceeds past guards, got nil")
+	}
+	if !strings.Contains(err.Error(), "API key") && !strings.Contains(err.Error(), "secret") {
+		t.Errorf("expected secret-related error, got: %v", err)
+	}
+}
